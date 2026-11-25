@@ -19,7 +19,11 @@ from ..integrations.weather import (
     get_weather_forecast,
 )
 from ..models.segment import RoadSegment
-from ..schemas.route import RouteRequest, RouteCollectionResponse
+from ..schemas.route import (
+    LocationRiskResponse,
+    RouteRequest,
+    RouteCollectionResponse,
+)
 from ..services.risk_service import assess_segment_risk
 from ..services.route_service import (
     assess_route_segments,
@@ -27,6 +31,7 @@ from ..services.route_service import (
     classify_weather_risk,
     process_osrm_route,
 )
+from ..services.traffic_service import get_segment_traffic
 from .risk_routes import identify_corridor_direction
 from risk_engine.score_route import load_route_segments
 
@@ -183,6 +188,23 @@ async def _forecast_route_segments(
     return result
 
 
+async def _fetch_traffic_for_segments(segments):
+    """Fetch traffic with a maximum of five concurrent provider requests."""
+    semaphore = asyncio.Semaphore(5)
+
+    async def fetch_one(segment):
+        async with semaphore:
+            return await get_segment_traffic(
+                (segment["start"][1] + segment["end"][1]) / 2,
+                (segment["start"][0] + segment["end"][0]) / 2,
+            )
+
+    return await asyncio.gather(
+        *(fetch_one(segment) for segment in segments),
+        return_exceptions=True,
+    )
+
+
 @router.post(
     "/route",
     response_model=RouteCollectionResponse,
@@ -238,11 +260,20 @@ async def calculate_route(
                 processed["distance_m"],
             )
 
+            traffic_results = await _fetch_traffic_for_segments(segments)
+            traffic_by_segment = {
+                segment["segment_id"]: (
+                    result if not isinstance(result, Exception) else None
+                )
+                for segment, result in zip(segments, traffic_results)
+            }
+
             # Step 4: Assess individual route segments.
             assessed_segments = assess_route_segments(
                 db,
                 segments,
                 weather_by_segment=weather_by_segment,
+                traffic_by_segment=traffic_by_segment,
             )
 
             # Step 5: Remove duplicate risk-data-gap messages.
@@ -292,7 +323,7 @@ async def calculate_route(
     return {"routes": routes}
 
 
-@router.get("/risk")
+@router.get("/risk", response_model=LocationRiskResponse)
 async def get_location_risk(
     lat: float,
     lon: float,
@@ -497,13 +528,25 @@ async def get_location_risk(
         return_exceptions=True,
     )
 
+    traffic_results = await _fetch_traffic_for_segments(candidates)
+
     # Step 8: Assess each selected road segment.
     assessed_segments = []
 
-    for candidate, weather in zip(candidates, weather_forecasts):
+    for candidate, weather, traffic_result in zip(
+        candidates, weather_forecasts, traffic_results
+    ):
         if isinstance(weather, Exception):
             weather = None
 
+        traffic = (
+            traffic_result
+            if not isinstance(traffic_result, Exception)
+            else None
+        )
+        heavy_traffic = (
+            traffic["heavy_traffic"] if traffic is not None else None
+        )
         heavy_rain, low_visibility = classify_weather_risk(weather)
 
         road = candidate["road"]
@@ -512,10 +555,20 @@ async def get_location_risk(
             db,
             start=candidate["start"],
             end=candidate["end"],
+            coordinates=(
+                candidate["geometry"]["coordinates"]
+                if (
+                    isinstance(candidate["geometry"], dict)
+                    and candidate["geometry"].get("type") == "LineString"
+                    and isinstance(candidate["geometry"].get("coordinates"), list)
+                    and len(candidate["geometry"]["coordinates"]) >= 2
+                )
+                else None
+            ),
             slope_percent=road.slope_percent,
             slope_threshold_percent=SLOPE_THRESHOLD_PERCENT,
             heavy_rain=heavy_rain,
-            heavy_traffic=None,
+            heavy_traffic=heavy_traffic,
             low_visibility=low_visibility,
         )
 
@@ -536,6 +589,11 @@ async def get_location_risk(
                 else None
             ),
             "weather_forecast": weather,
+            "traffic": traffic,
+            "data_sources": {
+                "weather": weather.get("source") if isinstance(weather, dict) else None,
+                "traffic": traffic.get("source") if traffic else None,
+            },
             "risk_assessment": risk["risk_assessment"],
             "risk_score": risk["score"],
             "risk_level": risk["level"],

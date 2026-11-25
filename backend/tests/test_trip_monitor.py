@@ -1,6 +1,6 @@
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -76,6 +76,21 @@ def test_start_does_not_start_running_scheduler():
         start.assert_not_called()
 
 
+def test_start_skips_when_monitor_disabled(monkeypatch):
+    monkeypatch.setattr(
+        trip_monitor.settings,
+        "trip_monitor_enabled",
+        False,
+    )
+
+    with patch.object(trip_monitor.scheduler, "add_job") as add_job, \
+         patch.object(trip_monitor.scheduler, "start") as start:
+        trip_monitor.start_trip_monitor()
+
+        add_job.assert_not_called()
+        start.assert_not_called()
+
+
 def test_stop_trip_monitor():
     with patch.object(
         type(trip_monitor.scheduler),
@@ -109,7 +124,7 @@ def test_monitor_active_trips_checks_recent_trips():
     mock_db.scalars.return_value.all.return_value = [1]
 
     mock_trip = MagicMock()
-    mock_trip.last_location_at = datetime.utcnow()
+    mock_trip.last_location_at = datetime.now(timezone.utc).replace(tzinfo=None)
     mock_db.scalar.return_value = mock_trip
 
     with patch.object(trip_monitor, "SessionLocal", return_value=mock_db), \
@@ -133,7 +148,7 @@ def test_monitor_skips_stale_trip():
     mock_db.scalars.return_value.all.return_value = [1]
 
     mock_trip = MagicMock()
-    mock_trip.last_location_at = datetime.utcnow() - timedelta(minutes=20)
+    mock_trip.last_location_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=20)
     mock_db.scalar.return_value = mock_trip
 
     with patch.object(trip_monitor, "SessionLocal", return_value=mock_db), \

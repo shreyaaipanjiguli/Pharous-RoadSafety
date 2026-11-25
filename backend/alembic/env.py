@@ -1,4 +1,4 @@
-
+﻿
 from logging.config import fileConfig
 
 from alembic import context
@@ -27,10 +27,12 @@ PHAROS_TABLES = {
     "reports",
     "report_votes",
     "road_segments",
+    "corridors",
     "incidents_history",
     "trips",
     "device_tokens",
     "notification_outbox",
+    "notifications",
 }
 
 
@@ -79,3 +81,5 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+
+

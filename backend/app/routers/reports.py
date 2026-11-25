@@ -1,3 +1,4 @@
+import logging
 
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -18,6 +19,8 @@ from ..schemas.report import (
     ReportResponse,
 )
 from ..security.deps import get_current_user
+from ..services.trip_monitor import process_report_for_active_trips
+from ..services.trip_alert_service import deliver_pending_notifications
 
 
 router = APIRouter(prefix="/reports", tags=["Hazard Reports"])
@@ -30,6 +33,11 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
     "",
     response_model=ReportResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "User account is blocked"},
+        429: {"description": "Report submission limit exceeded"},
+    },
 )
 def create_report(
     data: ReportCreate,
@@ -95,7 +103,23 @@ def create_report(
         expires_at=report.expires_at,
     )
 
+    # Persist the report first. Notification processing must not prevent
+    # a valid hazard report from being saved.
     db.commit()
+
+    try:
+        process_report_for_active_trips(db, report)
+        db.commit()
+
+        # Push delivery happens only after inbox/outbox rows are committed.
+        deliver_pending_notifications(db)
+    except Exception:
+        db.rollback()
+        logging.getLogger(__name__).exception(
+            "Notification processing failed for report %s",
+            report.id,
+        )
+
     return response
 
 
@@ -241,7 +265,16 @@ def list_reports(
     ]
 
 
-@router.post("/{report_id}/confirm")
+@router.post(
+    "/{report_id}/confirm",
+    responses={
+        400: {"description": "Report is expired or inactive"},
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "Cannot vote on your own report or user account is blocked"},
+        404: {"description": "Report not found"},
+        409: {"description": "You have already voted on this report"},
+    },
+)
 def confirm_report(
     report_id: int,
     db: DbSession,
@@ -257,7 +290,16 @@ def confirm_report(
     )
 
 
-@router.post("/{report_id}/clear")
+@router.post(
+    "/{report_id}/clear",
+    responses={
+        400: {"description": "Report is expired or inactive"},
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "Cannot vote on your own report or user account is blocked"},
+        404: {"description": "Report not found"},
+        409: {"description": "You have already voted on this report"},
+    },
+)
 def clear_report(
     report_id: int,
     db: DbSession,

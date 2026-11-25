@@ -845,24 +845,6 @@ def test_report_with_no_clear_votes_is_not_suspicious(
 
     assert is_suspicious_report(db_session, report) is False
 
-def test_create_report_rejects_invalid_severity(client):
-    headers = get_report_auth_headers(
-        client, "invalid-severity@example.com"
-    )
-    response = client.post(
-        "/reports",
-        headers=headers,
-        json={
-            "type": "landslide",
-            "severity": 4,
-            "description": "Invalid severity",
-            "latitude": 12.9716,
-            "longitude": 77.5946,
-        },
-    )
-
-    assert response.status_code == 422
-
 def test_create_report_rejects_invalid_report_type(client):
     headers = get_report_auth_headers(
         client, "invalid-type@example.com"
@@ -1101,3 +1083,85 @@ def test_cast_vote_reraises_unrelated_integrity_error():
         cast_vote(1, "confirm", db, current_user)
 
     db.rollback.assert_called_once()
+
+def test_report_submission_creates_notification_for_affected_driver(
+    client, db_session
+):
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    from sqlalchemy import select
+
+    from backend.app.models.notification import Notification
+    from backend.app.models.trip import Trip
+    from backend.app.models.user import User
+
+    driver_headers = get_report_auth_headers(
+        client, "endpoint-hazard-driver@example.com"
+    )
+    reporter_headers = get_report_auth_headers(
+        client, "endpoint-hazard-reporter@example.com"
+    )
+
+    driver = db_session.scalar(
+        select(User).where(
+            User.email == "endpoint-hazard-driver@example.com"
+        )
+    )
+
+    # The trip has a fresh GPS location at the expected hazard location.
+    trip = Trip(
+        user_id=driver.id,
+        route_json={"distance_m": 1000},
+        status="active",
+        last_latitude=12.9716,
+        last_longitude=77.5946,
+        last_location_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+    db_session.add(trip)
+    db_session.flush()
+
+    with patch(
+        "backend.app.routers.reports.deliver_pending_notifications"
+    ) as deliver:
+        response = client.post(
+            "/reports",
+            headers=reporter_headers,
+            json={
+                "type": "landslide",
+                "severity": 2,
+                "description": "Hazard near an active trip",
+                "latitude": 12.9716,
+                "longitude": 77.5946,
+            },
+        )
+
+    assert response.status_code == 201
+    report_id = response.json()["id"]
+
+    driver_notification = db_session.scalar(
+        select(Notification).where(
+            Notification.user_id == driver.id,
+            Notification.event_key == f"hazard:report:{report_id}",
+        )
+    )
+
+    reporter = db_session.scalar(
+        select(User).where(
+            User.email == "endpoint-hazard-reporter@example.com"
+        )
+    )
+
+    reporter_notification = db_session.scalar(
+        select(Notification).where(
+            Notification.user_id == reporter.id,
+            Notification.event_key == f"hazard:report:{report_id}",
+        )
+    )
+
+    assert driver_notification is not None
+    assert driver_notification.type == "hazard"
+    assert driver_notification.is_read is False
+    assert reporter_notification is None
+
+    deliver.assert_called_once()

@@ -1,5 +1,5 @@
-import logging
-from datetime import datetime
+﻿import logging
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,15 +21,37 @@ from ..schemas.trip_location import (
 from ..security.deps import get_current_user
 from ..services.trip_alert_service import (
     check_trip_hazards,
-    deliver_pending_notifications,
 )
 
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/trips", tags=["trips"])
+router = APIRouter(
+    prefix="/trips",
+    tags=["trips"],
+    responses={
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "User account is blocked"},
+    },
+)
 
 DbSession = Annotated[Session, Depends(get_db)]
+
+@router.get(
+    "/active",
+    response_model=TripResponse | None,
+)
+def get_active_trip(
+    db: DbSession,
+    current_user=Depends(get_current_user),
+):
+    return db.scalar(
+        select(Trip).where(
+            Trip.user_id == current_user.id,
+            Trip.status == "active",
+        )
+    )
+
 
 
 @router.post(
@@ -118,21 +140,11 @@ def update_trip_location(
 
     trip.last_latitude = request.latitude
     trip.last_longitude = request.longitude
-    trip.last_location_at = datetime.utcnow()
+    trip.last_location_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     alerts_sent = check_trip_hazards(db, trip)
 
     db.commit()
-
-    # GPS update is already committed. Delivery failures must not
-    # turn a successful location update into an HTTP 500 response.
-    try:
-        deliver_pending_notifications(db)
-    except Exception:
-        db.rollback()
-        logger.exception(
-            "Notification delivery failed after trip location update"
-        )
 
     return TripLocationResponse(
         message="Location updated successfully.",
@@ -170,9 +182,10 @@ def end_trip(
         )
 
     trip.status = request.status
-    trip.ended_at = datetime.utcnow()
+    trip.ended_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     db.commit()
     db.refresh(trip)
 
     return trip
+

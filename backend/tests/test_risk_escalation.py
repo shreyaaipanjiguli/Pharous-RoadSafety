@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from unittest.mock import patch
 
@@ -113,7 +113,7 @@ def test_failed_notification_can_be_retried(db_session):
         assert item.attempts == 1
         assert item.status == "pending"
 
-        item.next_attempt_at = datetime.utcnow() - timedelta(seconds=1)
+        item.next_attempt_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
         db_session.flush()
 
         second_delivery = deliver_pending_notifications(db_session)
@@ -157,3 +157,33 @@ def test_risk_downgrade_updates_baseline_without_alert(db_session):
     assert result is False
     assert trip.last_alerted_level == "Yellow"
     mock_send.assert_not_called()
+
+def test_notification_moves_to_failed_after_max_attempts(db_session):
+    trip = create_test_trip(
+        db_session, "max-retry@example.com"
+    )
+    item = NotificationOutbox(
+        user_id=trip.user_id,
+        trip_id=trip.id,
+        dedupe_key="max-retry-test",
+        fcm_token="test-token",
+        title="Test",
+        body="Test notification",
+        status="pending",
+        attempts=4,
+        next_attempt_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1),
+    )
+    db_session.add(item)
+    db_session.commit()
+
+    with patch(
+        "backend.app.integrations.fcm.send",
+        return_value=False,
+    ):
+        delivered = deliver_pending_notifications(db_session)
+
+    db_session.refresh(item)
+    assert delivered == 0
+    assert item.attempts == 5
+    assert item.status == "failed"
+

@@ -22,6 +22,8 @@ class RouteOption {
   final String riskAssessment;
   final List<String> riskDataGaps;
   final double? overallRiskScore;
+  final double? overallRiskCoveredDistanceM;
+  final double? overallRiskCoveragePercent;
   final String? overallRiskLevel;
   final String? overallRiskColor;
   final List<String> overallRiskReasons;
@@ -34,6 +36,8 @@ class RouteOption {
     required this.riskAssessment,
     required this.riskDataGaps,
     this.overallRiskScore,
+    this.overallRiskCoveredDistanceM,
+    this.overallRiskCoveragePercent,
     this.overallRiskLevel,
     this.overallRiskColor,
     required this.overallRiskReasons,
@@ -53,6 +57,10 @@ class RouteOption {
       riskAssessment: json['risk_assessment'] ?? 'incomplete',
       riskDataGaps: List<String>.from(json['risk_data_gaps'] ?? []),
       overallRiskScore: (json['overall_risk_score'] as num?)?.toDouble(),
+      overallRiskCoveredDistanceM:
+          (json['overall_risk_covered_distance_m'] as num?)?.toDouble(),
+      overallRiskCoveragePercent:
+          (json['overall_risk_coverage_percent'] as num?)?.toDouble(),
       overallRiskLevel: json['overall_risk_level'] as String?,
       overallRiskColor: json['overall_risk_color'] as String?,
       overallRiskReasons:

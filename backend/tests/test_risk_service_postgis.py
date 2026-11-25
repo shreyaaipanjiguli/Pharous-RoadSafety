@@ -1,5 +1,6 @@
+import pytest
 from backend.app.models.user import User
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from backend.app.models.segment import RoadSegment
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -9,11 +10,16 @@ from backend.app.models.report import Report
 from backend.app.services.risk_service import assess_segment_risk
 
 
-def add_incident(db: Session, longitude: float, latitude: float) -> None:
+def add_incident(
+    db: Session,
+    longitude: float,
+    latitude: float,
+    incident_type: str = "landslide",
+) -> None:
     incident = IncidentHistory(
-        external_id=f"risk-test-{datetime.utcnow().timestamp()}",
+        external_id=f"risk-test-{datetime.now(timezone.utc).replace(tzinfo=None).timestamp()}",
         incident_date=date.today(),
-        type="landslide",
+        type=incident_type,
         location_name="Risk service integration test",
         geom=None,
         location_confidence="exact",
@@ -41,7 +47,7 @@ def add_report(
 ):
     user = User(
         name="Risk Service Test User",
-        email=f"risk-test-{datetime.utcnow().timestamp()}@example.com",
+        email=f"risk-test-{datetime.now(timezone.utc).replace(tzinfo=None).timestamp()}@example.com",
         password_hash="test-only-password-hash",
     )
     db.add(user)
@@ -53,7 +59,7 @@ def add_report(
         severity=2,
         description="Risk service integration test",
         status=status,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
         expires_at=expires_at,
         geom=None,
     )
@@ -95,6 +101,27 @@ def test_nearby_historical_landslide_is_detected(db_session):
     assert result["risk_flags"]["landslide_history"] is True
 
 
+
+
+@pytest.mark.parametrize(
+    "hazard_type",
+    ["landslide", "falling_rock", "falling_tree", "flood"],
+)
+def test_all_supported_historical_hazards_are_detected(
+    db_session,
+    hazard_type,
+):
+    add_incident(
+        db_session,
+        75.005,
+        12.001,
+        incident_type=hazard_type,
+    )
+
+    result = assess(db_session)
+
+    assert result["risk_flags"]["landslide_history"] is True
+
 def test_nearby_active_report_is_detected(db_session):
     add_report(db_session, 75.005, 12.001)
 
@@ -108,7 +135,7 @@ def test_expired_report_is_ignored(db_session):
         db_session,
         75.005,
         12.001,
-        expires_at=datetime.utcnow() - timedelta(hours=1),
+        expires_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1),
     )
 
     result = assess(db_session)
@@ -125,6 +152,7 @@ def test_distant_active_report_is_ignored(db_session):
 
 def test_road_segment_model_accepts_test_geometry(db_session):
     segment = RoadSegment(
+        corridor_id=1,
         segment_no=987654,
         geom="SRID=4326;LINESTRING(75.0 12.0, 75.01 12.0)",
         length_m=1000.0,
@@ -140,7 +168,7 @@ def test_road_segment_model_accepts_test_geometry(db_session):
 
 def add_unlocated_incident(db: Session) -> None:
     incident = IncidentHistory(
-        external_id=f"unlocated-risk-test-{datetime.utcnow().timestamp()}",
+        external_id=f"unlocated-risk-test-{datetime.now(timezone.utc).replace(tzinfo=None).timestamp()}",
         incident_date=date.today(),
         type="landslide",
         location_name="Unlocated historical corridor incident",
@@ -154,6 +182,7 @@ def add_unlocated_incident(db: Session) -> None:
 
 def add_corridor_segment(db: Session) -> None:
     segment = RoadSegment(
+        corridor_id=1,
         segment_no=987653,
         geom="SRID=4326;LINESTRING(75.0 12.0, 75.01 12.0)",
         length_m=1000.0,
@@ -183,3 +212,4 @@ def test_unlocated_incidents_make_corridor_history_unknown(db_session):
     assert result["risk_flags"]["landslide_history"] is None
     assert result["risk_assessment"] == "incomplete"
     assert "landslide_history" in result["risk_data_gaps"]
+

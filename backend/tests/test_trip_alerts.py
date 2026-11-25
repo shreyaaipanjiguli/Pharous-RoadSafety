@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from unittest.mock import patch
 
@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from backend.app.models.device import DeviceToken
 from backend.app.models.report import Report
 from backend.app.models.notification_outbox import NotificationOutbox
+from backend.app.models.notification import Notification
 from backend.app.models.trip import Trip
 from backend.app.models.user import User
 from backend.app.services.trip_alert_service import (
@@ -82,7 +83,7 @@ def create_report(db_session, user_id, report_type="landslide",
 def test_device_registration_requires_authentication(client):
     response = client.post(
         "/devices",
-        json={"fcm_token": "test-device-token"},
+        json={"token": "test-device-token"},
     )
     assert response.status_code == 401
 
@@ -95,7 +96,7 @@ def test_device_registration_and_token_upsert(client, db_session):
         client, "device-other@example.com"
     )
 
-    payload = {"fcm_token": "phase6-test-fcm-token"}
+    payload = {"token": "phase6-test-fcm-token"}
 
     first = client.post(
         "/devices", headers=owner_headers, json=payload
@@ -110,7 +111,7 @@ def test_device_registration_and_token_upsert(client, db_session):
     token_count = db_session.scalar(
         select(func.count())
         .select_from(DeviceToken)
-        .where(DeviceToken.fcm_token == payload["fcm_token"])
+        .where(DeviceToken.fcm_token == payload["token"])
     )
     assert token_count == 1
 
@@ -122,7 +123,7 @@ def test_device_registration_and_token_upsert(client, db_session):
 
     token = db_session.scalar(
         select(DeviceToken).where(
-            DeviceToken.fcm_token == payload["fcm_token"]
+            DeviceToken.fcm_token == payload["token"]
         )
     )
     other_user = get_user(
@@ -242,8 +243,10 @@ def test_location_update_rejects_invalid_coordinates(client):
 def test_nearby_hazard_sends_alert_to_all_devices(db_session, client):
     get_auth_headers(client, "hazard-driver@example.com")
     user = get_user(db_session, "hazard-driver@example.com")
+    get_auth_headers(client, "hazard-reporter@example.com")
+    reporter = get_user(db_session, "hazard-reporter@example.com")
     trip = create_trip(db_session, user.id)
-    report = create_report(db_session, user.id)
+    report = create_report(db_session, reporter.id)
 
     db_session.add_all([
         DeviceToken(user_id=user.id, fcm_token="hazard-device-one"),
@@ -277,8 +280,10 @@ def test_nearby_hazard_sends_alert_to_all_devices(db_session, client):
 def test_hazard_alert_is_not_sent_twice(db_session, client):
     get_auth_headers(client, "dedup-driver@example.com")
     user = get_user(db_session, "dedup-driver@example.com")
+    get_auth_headers(client, "dedup-reporter@example.com")
+    reporter = get_user(db_session, "dedup-reporter@example.com")
     trip = create_trip(db_session, user.id)
-    report = create_report(db_session, user.id)
+    report = create_report(db_session, reporter.id)
 
     db_session.add(
         DeviceToken(user_id=user.id, fcm_token="dedup-device")
@@ -312,8 +317,10 @@ def test_hazard_alert_is_not_sent_twice(db_session, client):
 def test_failed_hazard_delivery_can_be_retried(db_session, client):
     get_auth_headers(client, "retry-driver@example.com")
     user = get_user(db_session, "retry-driver@example.com")
+    get_auth_headers(client, "retry-reporter@example.com")
+    reporter = get_user(db_session, "retry-reporter@example.com")
     trip = create_trip(db_session, user.id)
-    report = create_report(db_session, user.id)
+    report = create_report(db_session, reporter.id)
 
     db_session.add(
         DeviceToken(user_id=user.id, fcm_token="retry-device")
@@ -341,7 +348,7 @@ def test_failed_hazard_delivery_can_be_retried(db_session, client):
         assert item.status == "pending"
         assert item.attempts == 1
 
-        item.next_attempt_at = datetime.utcnow() - timedelta(seconds=1)
+        item.next_attempt_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
         db_session.flush()
 
         second_delivery = deliver_pending_notifications(db_session)
@@ -402,3 +409,69 @@ def test_upcoming_route_segments_validate_finite_coordinates(db_session, client)
     )
 
     assert result == 0
+
+
+def test_hazard_inbox_is_created_without_device_token(db_session, client):
+    get_auth_headers(client, "inbox-driver@example.com")
+    get_auth_headers(client, "inbox-reporter@example.com")
+
+    driver = get_user(db_session, "inbox-driver@example.com")
+    reporter = get_user(db_session, "inbox-reporter@example.com")
+
+    trip = create_trip(db_session, driver.id)
+    report = create_report(db_session, reporter.id)
+
+    result = check_trip_hazards(db_session, trip, report_id=report.id)
+
+    notification = db_session.scalar(
+        select(Notification).where(
+            Notification.user_id == driver.id,
+            Notification.event_key == f"hazard:report:{report.id}",
+        )
+    )
+
+    outbox_count = db_session.scalar(
+        select(func.count())
+        .select_from(NotificationOutbox)
+        .where(NotificationOutbox.trip_id == trip.id)
+    )
+
+    assert result == 1
+    assert notification is not None
+    assert notification.type == "hazard"
+    assert notification.is_read is False
+    assert outbox_count == 0
+
+
+def test_reporter_does_not_receive_own_hazard_alert(db_session, client):
+    get_auth_headers(client, "self-report-driver@example.com")
+    driver = get_user(db_session, "self-report-driver@example.com")
+
+    trip = create_trip(db_session, driver.id)
+    report = create_report(db_session, driver.id)
+
+    db_session.add(
+        DeviceToken(
+            user_id=driver.id,
+            fcm_token="self-report-device",
+        )
+    )
+    db_session.flush()
+
+    result = check_trip_hazards(db_session, trip, report_id=report.id)
+
+    notification_count = db_session.scalar(
+        select(func.count())
+        .select_from(Notification)
+        .where(Notification.user_id == driver.id)
+    )
+
+    outbox_count = db_session.scalar(
+        select(func.count())
+        .select_from(NotificationOutbox)
+        .where(NotificationOutbox.trip_id == trip.id)
+    )
+
+    assert result == 0
+    assert notification_count == 0
+    assert outbox_count == 0

@@ -1,7 +1,7 @@
 
 """Database-backed risk flags for a route segment."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 import math
 
@@ -16,6 +16,13 @@ from risk_engine.scorer import calculate_risk
 
 
 DEFAULT_PROXIMITY_M = 500.0
+
+HISTORICAL_HAZARD_TYPES = (
+    "landslide",
+    "falling_rock",
+    "falling_tree",
+    "flood",
+)
 
 
 def _validate_coordinate(point: list[float], name: str) -> None:
@@ -51,7 +58,7 @@ def assess_segment_risk(
 
     Spatial checks use the complete LineString when coordinates are supplied.
 
-    Historical landslide data is considered unknown when unlocated landslide
+    Historical hazards are considered unknown when unlocated supported hazard
     records exist and no nearby geocoded incident can be confirmed.
     """
 
@@ -72,7 +79,37 @@ def assess_segment_risk(
             "Segment endpoints must be [longitude, latitude]"
         )
 
-    segment_coordinates = coordinates or [start, end]
+    def validate_point(point: Any) -> list[float]:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError(
+                "Segment coordinates must be [longitude, latitude] pairs"
+            )
+
+        try:
+            lon, lat = float(point[0]), float(point[1])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Coordinates must be numeric") from exc
+
+        if (
+            not math.isfinite(lon)
+            or not math.isfinite(lat)
+            or not -180 <= lon <= 180
+            or not -90 <= lat <= 90
+        ):
+            raise ValueError(
+                "Coordinates must be finite and within valid ranges"
+            )
+
+        return [lon, lat]
+
+    start = validate_point(start)
+    end = validate_point(end)
+
+    segment_coordinates = (
+        [validate_point(point) for point in coordinates]
+        if coordinates is not None
+        else [start, end]
+    )
 
     if len(segment_coordinates) < 2:
         raise ValueError(
@@ -103,7 +140,7 @@ def assess_segment_risk(
         select(IncidentHistory.id)
         .where(
             IncidentHistory.geom.is_not(None),
-            func.lower(IncidentHistory.type).contains("landslide"),
+            func.lower(IncidentHistory.type).in_(HISTORICAL_HAZARD_TYPES),
             func.ST_DWithin(
                 cast(
                     IncidentHistory.geom,
@@ -121,7 +158,7 @@ def assess_segment_risk(
         select(IncidentHistory.id)
         .where(
             IncidentHistory.geom.is_(None),
-            func.lower(IncidentHistory.type).contains("landslide"),
+            func.lower(IncidentHistory.type).in_(HISTORICAL_HAZARD_TYPES),
         )
         .limit(1)
     )
@@ -152,7 +189,7 @@ def assess_segment_risk(
         incident_nearby = False
 
     # Check for active nearby landslide or falling-rock reports.
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     hazard_nearby = db.scalar(
         select(Report.id)

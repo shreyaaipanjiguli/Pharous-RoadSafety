@@ -17,6 +17,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROUTE_DATA_FILE = PROJECT_ROOT / "data" / "route_segments_with_slope.json"
 STEEP_SLOPE_THRESHOLD = 6.0
 
+# The legacy landslide_history scoring factor covers all supported
+# historical hazard types, as documented in rules.yaml.
+HISTORICAL_HAZARD_TYPES = (
+    "landslide",
+    "falling_rock",
+    "falling_tree",
+    "flood",
+)
+
 
 def load_route_segments():
     with open(ROUTE_DATA_FILE, "r", encoding="utf-8") as file:
@@ -50,14 +59,18 @@ def score_route_segments(
     historical_heavy_rain = is_heavy_rain(rainfall_observation)
     segments = load_route_segments()
     incidents = load_incidents()
-    landslides = [item for item in incidents if item["type"] == "landslide"]
+    historical_hazards = [
+        item for item in incidents
+        if str(item.get("type", "")).strip().lower()
+        in HISTORICAL_HAZARD_TYPES
+    ]
 
-    geocoded_coverage_complete = bool(landslides) and all(
+    geocoded_coverage_complete = bool(historical_hazards) and all(
         item["latitude"] is not None and item["longitude"] is not None
-        for item in landslides
+        for item in historical_hazards
     )
     incident_matches = match_incidents_to_segments(
-        landslides, segments, max_distance_m=500
+        historical_hazards, segments, max_distance_m=500
     )
 
     base_time = now or datetime.now(timezone.utc)
@@ -98,7 +111,7 @@ def score_route_segments(
         segment_id = segment["segment_id"]
         slope = float(segment["slope_percent"])
         incident_ids = incident_matches[segment_id]
-        historical_landslide = (
+        historical_hazard = (
             True if incident_ids
             else False if geocoded_coverage_complete
             else None
@@ -124,7 +137,7 @@ def score_route_segments(
         risk = calculate_risk(
             steep_slope=abs(slope) >= STEEP_SLOPE_THRESHOLD,
             heavy_rain=heavy_rain,
-            landslide_history=historical_landslide,
+            landslide_history=historical_hazard,
             recent_hazard_report=recent_hazard,
             heavy_traffic=heavy_traffic,
             low_visibility=low_visibility,

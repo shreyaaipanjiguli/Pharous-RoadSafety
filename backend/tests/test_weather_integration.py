@@ -111,3 +111,113 @@ def test_handles_http_failure():
                     ),
                 )
             )
+
+@pytest.mark.parametrize(
+    "latitude,longitude",
+    [
+        (float("nan"), 75.6),
+        (float("inf"), 75.6),
+        (12.85, float("nan")),
+        (12.85, float("-inf")),
+    ],
+)
+def test_rejects_non_finite_coordinates(latitude, longitude):
+    with pytest.raises(ValueError):
+        asyncio.run(
+            get_weather_forecast(
+                latitude, longitude,
+                datetime(2026, 10, 28, 10, tzinfo=timezone.utc),
+            )
+        )
+
+
+def _run_forecast_with_payload(payload):
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = payload
+    client = AsyncMock()
+    client.get.return_value = response
+
+    with patch(
+        "backend.app.integrations.weather.httpx.AsyncClient"
+    ) as client_class:
+        client_class.return_value.__aenter__.return_value = client
+        return asyncio.run(
+            get_weather_forecast(
+                12.85, 75.60,
+                datetime(2026, 10, 28, 10, tzinfo=timezone.utc),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "precipitation,visibility",
+    [
+        ([float("nan")], [10000]),
+        ([float("inf")], [10000]),
+        ([2.5], [float("nan")]),
+        ([2.5], [float("inf")]),
+        ([-1], [10000]),
+        ([2.5], [-1]),
+    ],
+)
+def test_rejects_invalid_weather_measurements(precipitation, visibility):
+    payload = {
+        "hourly": {
+            "time": ["2026-10-28T10:00"],
+            "precipitation": precipitation,
+            "visibility": visibility,
+        }
+    }
+    with pytest.raises(WeatherForecastError):
+        _run_forecast_with_payload(payload)
+
+
+@pytest.mark.parametrize("payload", [[], "invalid", 123, None])
+def test_rejects_non_object_api_payload(payload):
+    with pytest.raises(WeatherForecastError):
+        _run_forecast_with_payload(payload)
+
+
+def test_preserves_timezone_offset_in_forecast_timestamp():
+    payload = {
+        "hourly": {
+            "time": ["2026-10-28T12:00+02:00"],
+            "precipitation": [2.5],
+            "visibility": [10000],
+        }
+    }
+    result = _run_forecast_with_payload(payload)
+    assert result["forecast_time"] == "2026-10-28T10:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "times",
+    [
+        ["2026-10-28T10:00", "2026-10-28T10:00"],
+        ["2026-10-28T11:00", "2026-10-28T10:00"],
+    ],
+)
+def test_rejects_duplicate_or_non_monotonic_forecast_timestamps(times):
+    payload = {
+        "hourly": {
+            "time": times,
+            "precipitation": [2.5, 3.0],
+            "visibility": [10000, 9000],
+        }
+    }
+    with pytest.raises(WeatherForecastError):
+        _run_forecast_with_payload(payload)
+
+
+def test_preserves_missing_weather_measurements_as_unknown():
+    payload = {
+        "hourly": {
+            "time": ["2026-10-28T10:00"],
+            "precipitation": [None],
+            "visibility": [None],
+        }
+    }
+    result = _run_forecast_with_payload(payload)
+    assert result["precipitation_mm"] is None
+    assert result["visibility_m"] is None

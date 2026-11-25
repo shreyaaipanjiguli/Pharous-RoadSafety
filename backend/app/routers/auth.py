@@ -113,7 +113,29 @@ def login(
         token_type="bearer",
     )
 
-@profile_router.put("/user/profile", response_model=UserResponse)
+@profile_router.get(
+    "/user/profile",
+    response_model=UserResponse,
+    responses={
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "User account is blocked"},
+    },
+)
+def get_profile(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """Return the authenticated user's profile."""
+    return current_user
+
+
+@profile_router.put(
+    "/user/profile",
+    response_model=UserResponse,
+    responses={
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "User account is blocked"},
+    },
+)
 def update_profile(
     request: ProfileUpdateRequest,
     current_user: Annotated[User, Depends(get_current_user)],

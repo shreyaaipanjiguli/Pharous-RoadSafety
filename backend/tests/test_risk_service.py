@@ -174,3 +174,36 @@ def test_nearby_historical_incident_is_true_even_with_unlocated_records(
     assert result["risk_flags"]["steep_slope"] is True
     assert result["risk_assessment"] == "complete"
     scorer.assert_called_once()
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_slope_values_are_rejected(value):
+    with pytest.raises(ValueError, match="slope_percent"):
+        risk_service.assess_segment_risk(
+            Mock(), start=[75.0, 12.0], end=[75.01, 12.01],
+            slope_percent=value, slope_threshold_percent=6.0,
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_slope_threshold_is_rejected(value):
+    with pytest.raises(ValueError, match="slope_threshold_percent"):
+        risk_service.assess_segment_risk(
+            Mock(), start=[75.0, 12.0], end=[75.01, 12.01],
+            slope_percent=5.0, slope_threshold_percent=value,
+        )
+
+
+@pytest.mark.parametrize("start", [[float("-inf"), 12.0], ["bad", 12.0]])
+def test_additional_invalid_start_coordinates_are_rejected(start):
+    with pytest.raises(ValueError):
+        risk_service.assess_segment_risk(
+            Mock(), start=start, end=[75.01, 12.01],
+        )
+
+
+def test_negative_infinity_proximity_is_rejected():
+    with pytest.raises(ValueError, match="proximity_m"):
+        risk_service.assess_segment_risk(
+            Mock(), start=[75.0, 12.0], end=[75.01, 12.01],
+            proximity_m=float("-inf"),
+        )

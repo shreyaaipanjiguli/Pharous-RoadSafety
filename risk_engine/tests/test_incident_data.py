@@ -4,10 +4,10 @@ import pytest
 from risk_engine.incident_data import load_incidents
 
 
-def test_loads_all_nine_incidents():
+def test_loads_all_twelve_incidents():
     incidents = load_incidents()
 
-    assert len(incidents) == 9
+    assert len(incidents) == 12
 
 
 def test_incident_ids_are_unique():
@@ -17,13 +17,17 @@ def test_incident_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
-def test_all_current_incidents_are_landslides():
+def test_all_incidents_have_supported_hazard_types():
     incidents = load_incidents()
 
-    assert all(
-        incident["type"] == "landslide"
-        for incident in incidents
-    )
+    supported_types = {
+        "landslide",
+        "falling_tree",
+        "falling_rock",
+        "flood",
+    }
+
+    assert {incident["type"] for incident in incidents} == supported_types
 
 
 def test_missing_coordinates_are_none():

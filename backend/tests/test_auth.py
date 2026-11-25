@@ -160,7 +160,7 @@ def test_tampered_token_is_rejected(client):
             "role": "driver",
             "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
         },
-        "definitely-not-the-real-secret",
+        "definitely-not-the-real-secret-key-with-extra-length",
         algorithm=settings.jwt_algorithm,
     )
 
@@ -426,3 +426,53 @@ def test_profile_update_schema_rejects_blank_name(name):
 
     with pytest.raises(ValidationError):
         ProfileUpdateRequest(name=name, preferred_language="en")
+
+
+def test_token_missing_required_claims_is_rejected(client):
+    import jwt
+    from backend.app.core.config import settings
+
+    # Missing exp
+    no_exp = jwt.encode(
+        {"sub": "1", "role": "driver"},
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    res_no_exp = client.put(
+        "/user/profile",
+        headers={"Authorization": f"Bearer {no_exp}"},
+        json={"name": "New Name", "preferred_language": "en"},
+    )
+    assert res_no_exp.status_code == 401
+
+    # Missing sub
+    no_sub = jwt.encode(
+        {"role": "driver", "exp": 9999999999},
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    res_no_sub = client.put(
+        "/user/profile",
+        headers={"Authorization": f"Bearer {no_sub}"},
+        json={"name": "New Name", "preferred_language": "en"},
+    )
+    assert res_no_sub.status_code == 401
+
+
+def test_token_with_non_positive_user_id_is_rejected(client):
+    import jwt
+    from backend.app.core.config import settings
+
+    for invalid_id in ["0", "-1"]:
+        token = jwt.encode(
+            {"sub": invalid_id, "role": "driver", "exp": 9999999999},
+            settings.jwt_secret,
+            algorithm=settings.jwt_algorithm,
+        )
+        res = client.put(
+            "/user/profile",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "New Name", "preferred_language": "en"},
+        )
+        assert res.status_code == 401
+

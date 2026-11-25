@@ -5,7 +5,7 @@ risk_rules:
 
   landslide_history:
     points: 25
-    description: "Historical landslide incidents increase risk"
+    description: "Historical landslides, falling rocks, falling trees, and floods increase risk"
 
   steep_slope:
     points: 20

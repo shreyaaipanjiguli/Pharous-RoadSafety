@@ -1,5 +1,4 @@
-
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -16,9 +15,9 @@ class NotificationService {
       'BLFtZPoIz0OIYa6wvRqxtZMuadZSyMfW-P0rr9fBMFmc9Lp2Efo-m1u2NqqSeI3dMagWEtzCbDggLOfeniNFYwE';
 
   static Future<String> enableNotifications() async {
-    if (!kIsWeb) {
+    if (!kIsWeb && defaultTargetPlatform != TargetPlatform.android) {
       throw Exception(
-        'Notifications are currently configured for Chrome web.',
+        'Notifications are currently supported on Android and web.',
       );
     }
 
@@ -34,14 +33,24 @@ class NotificationService {
       sound: true,
     );
 
-    if (permission.authorizationStatus ==
-        AuthorizationStatus.denied) {
-      return 'Notification permission was denied. Enable it in Chrome site settings.';
+    if (permission.authorizationStatus != AuthorizationStatus.authorized &&
+        permission.authorizationStatus != AuthorizationStatus.provisional) {
+      throw Exception(
+        'Notification permission was not granted. Enable it in your device settings and try again.',
+      );
     }
 
-    final token = await messaging
-        .getToken(vapidKey: _vapidKey)
-        .timeout(const Duration(seconds: 30));
+    String? token;
+
+    if (kIsWeb) {
+      token = await messaging
+          .getToken(vapidKey: _vapidKey)
+          .timeout(const Duration(seconds: 30));
+    } else {
+      token = await messaging
+          .getToken()
+          .timeout(const Duration(seconds: 30));
+    }
 
     if (token == null || token.isEmpty) {
       throw Exception('Firebase returned an empty FCM registration token.');
@@ -57,7 +66,7 @@ class NotificationService {
 
     if (response.statusCode != 200) {
       throw Exception(
-        'Device registration failed (HTTP ${response.statusCode}).',
+        'Device registration failed (HTTP ${response.statusCode}): ${response.body}',
       );
     }
 

@@ -1,9 +1,11 @@
+import math
 
 import csv
 from datetime import date
 from pathlib import Path
 
 from geoalchemy2 import WKTElement
+from sqlalchemy import case, func
 from sqlalchemy.dialects.postgresql import insert
 
 from backend.app.database import SessionLocal
@@ -29,25 +31,34 @@ def import_incidents() -> None:
 
                 latitude_text = (row.get("latitude") or "").strip()
                 longitude_text = (row.get("longitude") or "").strip()
+                confidence_text = (
+                    row.get("location_confidence") or ""
+                ).strip().lower()
 
-                # Never invent coordinates. If either is missing,
-                # preserve the incident with NULL geometry.
+                if confidence_text not in {"", "exact", "approximate", "unknown"}:
+                    raise ValueError(
+                        f"Invalid location confidence for {external_id}: {confidence_text}"
+                    )
+
                 geom = None
-                location_confidence = "unknown"
+                location_confidence = confidence_text or "unknown"
+
+                if bool(latitude_text) != bool(longitude_text):
+                    raise ValueError(
+                        f"Both latitude and longitude are required for {external_id}."
+                    )
 
                 if latitude_text and longitude_text:
                     latitude = float(latitude_text)
                     longitude = float(longitude_text)
 
-                    if not -90 <= latitude <= 90:
-                        raise ValueError(
-                            f"Invalid latitude for {external_id}: {latitude}"
-                        )
-
-                    if not -180 <= longitude <= 180:
-                        raise ValueError(
-                            f"Invalid longitude for {external_id}: {longitude}"
-                        )
+                    if (
+                        not math.isfinite(latitude)
+                        or not math.isfinite(longitude)
+                        or not -90 <= latitude <= 90
+                        or not -180 <= longitude <= 180
+                    ):
+                        raise ValueError(f"Invalid coordinates for {external_id}.")
 
                     geom = WKTElement(
                         f"POINT({longitude} {latitude})",
@@ -55,6 +66,7 @@ def import_incidents() -> None:
                     )
                 else:
                     without_coordinates += 1
+                    location_confidence = "unknown"
 
                 values = {
                     "external_id": external_id,
@@ -77,9 +89,16 @@ def import_incidents() -> None:
                         "incident_date": statement.excluded.incident_date,
                         "type": statement.excluded.type,
                         "location_name": statement.excluded.location_name,
-                        "geom": statement.excluded.geom,
-                        "location_confidence": (
-                            statement.excluded.location_confidence
+                        "geom": func.coalesce(
+                            statement.excluded.geom,
+                            IncidentHistory.geom,
+                        ),
+                        "location_confidence": case(
+                            (
+                                statement.excluded.geom.is_not(None),
+                                statement.excluded.location_confidence,
+                            ),
+                            else_=IncidentHistory.location_confidence,
                         ),
                         "source": statement.excluded.source,
                         "notes": statement.excluded.notes,

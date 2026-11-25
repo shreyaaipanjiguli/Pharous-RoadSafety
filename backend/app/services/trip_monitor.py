@@ -2,12 +2,13 @@
 import asyncio
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
 
+from ..core.config import settings
 from ..database import SessionLocal
 from ..integrations.weather import (
     WeatherForecastError,
@@ -203,6 +204,44 @@ def _get_upcoming_segments(
     return remaining_segments, average_speed_mps
 
 
+def process_report_for_active_trips(db, report) -> int:
+    """Check a newly created report against fresh active-trip routes."""
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        minutes=MAX_LOCATION_AGE_MINUTES
+    )
+
+    trips = db.scalars(
+        select(Trip)
+        .where(
+            Trip.status == "active",
+            Trip.last_latitude.is_not(None),
+            Trip.last_longitude.is_not(None),
+            Trip.last_location_at >= cutoff,
+        )
+        .with_for_update(skip_locked=True)
+    ).all()
+
+    notifications_created = 0
+
+    for trip in trips:
+        route_progress = _get_upcoming_segments(trip)
+
+        if route_progress is not None:
+            upcoming_segments, _ = route_progress
+        else:
+            upcoming_segments = None
+
+        notifications_created += check_trip_hazards(
+            db,
+            trip,
+            upcoming_segments=upcoming_segments,
+            report_id=report.id,
+        )
+
+    return notifications_created
+
+
 async def _fetch_weather_for_segments(
     segments: list[dict[str, Any]],
     average_speed_mps: float,
@@ -210,7 +249,7 @@ async def _fetch_weather_for_segments(
     """Fetch weather at each upcoming segment's estimated arrival time."""
 
     weather_by_segment: dict[int, dict[str, Any] | None] = {}
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     distance_before_segment = 0.0
 
     if (
@@ -364,7 +403,7 @@ def monitor_active_trips() -> None:
     db = SessionLocal()
 
     try:
-        cutoff = datetime.utcnow() - timedelta(
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
             minutes=MAX_LOCATION_AGE_MINUTES
         )
 
@@ -442,6 +481,10 @@ def monitor_active_trips() -> None:
 
 
 def start_trip_monitor() -> None:
+    if not settings.trip_monitor_enabled:
+        logger.info("Trip monitor disabled by configuration")
+        return
+
     if scheduler.running:
         return
 

@@ -141,7 +141,7 @@ def calculate_risk(
 
     if missing_factors:
         return {
-            "score": None,
+            "score": score,
             "known_score": score,
             "level": None,
             "reasons": reasons,

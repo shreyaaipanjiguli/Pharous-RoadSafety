@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime, timezone
 
 from sqlalchemy import (
     CheckConstraint,
@@ -33,6 +33,10 @@ class NotificationOutbox(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )
+    notification_id: Mapped[int | None] = mapped_column(
+        ForeignKey("notifications.id"),
+        nullable=True,
+    )
     trip_id: Mapped[int] = mapped_column(
         ForeignKey("trips.id"), nullable=False
     )
@@ -50,12 +54,13 @@ class NotificationOutbox(Base):
         Integer, default=0, server_default="0", nullable=False
     )
     next_attempt_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False
     )
     sent_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+

@@ -245,6 +245,7 @@ def test_admin_can_update_incident(
             "location_name": "Updated Road",
             "latitude": 13.0,
             "longitude": 77.6,
+            "location_confidence": "exact",
             "source": "Updated source",
             "notes": "Updated notes",
         },
@@ -257,6 +258,7 @@ def test_admin_can_update_incident(
     assert data["location_name"] == "Updated Road"
     assert data["latitude"] == pytest.approx(13.0)
     assert data["longitude"] == pytest.approx(77.6)
+    assert data["location_confidence"] == "exact"
     assert data["source"] == "Updated source"
 
 
@@ -592,3 +594,74 @@ def test_admin_can_submit_self_unblock_request_without_being_blocked(
 
     assert response.status_code == 200
     assert response.json()["is_blocked"] is False
+
+
+def test_incident_coordinates_require_explicit_confidence(
+    client,
+    db_session,
+    admin_user,
+):
+    incident = create_incident(db_session)
+    db_session.commit()
+
+    response = client.put(
+        f"/admin/incidents/{incident.id}",
+        headers=auth_headers(admin_user),
+        json={
+            "latitude": 13.0,
+            "longitude": 77.6,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_can_clear_incident_coordinates(
+    client,
+    db_session,
+    admin_user,
+):
+    incident = create_incident(db_session)
+    db_session.commit()
+
+    response = client.put(
+        f"/admin/incidents/{incident.id}",
+        headers=auth_headers(admin_user),
+        json={
+            "latitude": None,
+            "longitude": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["latitude"] is None
+    assert response.json()["longitude"] is None
+    assert response.json()["location_confidence"] == "unknown"
+
+    db_session.refresh(incident)
+    assert incident.geom is None
+    assert incident.location_confidence == "unknown"
+
+
+def test_incident_notes_update_preserves_location_and_confidence(
+    client,
+    db_session,
+    admin_user,
+):
+    incident = create_incident(db_session)
+    db_session.commit()
+
+    response = client.put(
+        f"/admin/incidents/{incident.id}",
+        headers=auth_headers(admin_user),
+        json={"notes": "Updated notes only"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["latitude"] == pytest.approx(12.9716)
+    assert response.json()["longitude"] == pytest.approx(77.5946)
+    assert response.json()["location_confidence"] == "exact"
+
+    db_session.refresh(incident)
+    assert incident.geom is not None
+    assert incident.location_confidence == "exact"

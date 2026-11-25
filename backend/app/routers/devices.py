@@ -18,6 +18,10 @@ DbSession = Annotated[Session, Depends(get_db)]
     "",
     response_model=DeviceResponse,
     status_code=status.HTTP_200_OK,
+    responses={
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "User account is blocked"},
+    },
 )
 def register_device(
     request: DeviceRegisterRequest,

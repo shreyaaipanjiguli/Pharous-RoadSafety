@@ -110,9 +110,9 @@ def fetch_weather_for_segments(segments, arrival_times, client=httpx):
     return results
 
 
-def fetch_traffic_for_segment(latitude, longitude, client=httpx):
+def fetch_traffic_for_segment(latitude, longitude, client=httpx, api_key=None):
     """Return confidence-qualified TomTom flow data, or None if unavailable."""
-    api_key = os.getenv("TOMTOM_API_KEY")
+    api_key = api_key or os.getenv("TOMTOM_API_KEY")
     if not api_key:
         return None
 

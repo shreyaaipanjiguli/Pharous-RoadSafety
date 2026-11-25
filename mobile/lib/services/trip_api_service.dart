@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
@@ -6,6 +6,40 @@ import '../config/api_config.dart';
 import 'auth_service.dart';
 
 class TripApiService {
+  static Future<Map<String, dynamic>?> getActiveTrip() async {
+    if (!AuthService.isLoggedIn) {
+      throw Exception('Please log in to retrieve your active trip.');
+    }
+
+    final response = await http
+        .get(
+          Uri.parse('${ApiConfig.baseUrl}/trips/active'),
+          headers: AuthService.authenticatedHeaders,
+        )
+        .timeout(const Duration(seconds: 30));
+
+    if (response.statusCode == 401) {
+      AuthService.handleUnauthorized();
+      throw Exception('Session expired. Please log in again.');
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Active trip lookup failed (${response.statusCode}): ${response.body}',
+      );
+    }
+
+    final decoded = jsonDecode(response.body);
+
+    if (decoded == null) return null;
+
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Invalid active trip response.');
+    }
+
+    return decoded;
+  }
+
   static Future<Map<String, dynamic>> startTrip({
     required Map<String, dynamic> routeJson,
   }) async {

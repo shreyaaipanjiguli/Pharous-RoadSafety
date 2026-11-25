@@ -9,6 +9,8 @@ import 'main_navigation.dart';
 import '../services/route_api_service.dart';
 import '../services/risk_api_service.dart';
 import '../services/trip_api_service.dart';
+import '../models/community_report.dart';
+import '../services/report_api_service.dart';
 
 class LiveMapScreen extends StatefulWidget {
   const LiveMapScreen({super.key});
@@ -31,14 +33,68 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   DateTime? _lastRiskFetch;
   int? _activeTripId;
   bool _tripBusy = false;
+  bool _tripRestoring = false;
+  bool _tripStateLoaded = false;
   DateTime? _lastTripLocationUpdate;
+
+  List<CommunityReport> _communityReports = [];
+  bool _loadingCommunityReports = false;
+  String? _communityReportsError;
 
   static const LatLng _defaultCenter = LatLng(12.9716, 77.5946);
 
   @override
   void initState() {
     super.initState();
+    _restoreActiveTrip();
     _startTracking();
+    _loadCommunityReports();
+  }
+
+  Future<void> _restoreActiveTrip() async {
+    if (_tripRestoring || _tripStateLoaded) return;
+
+    setState(() => _tripRestoring = true);
+
+    try {
+      final activeTrip = await TripApiService.getActiveTrip();
+
+      if (!mounted) return;
+
+      setState(() {
+        _activeTripId = activeTrip?['id'] as int?;
+        _lastTripLocationUpdate = null;
+        _tripStateLoaded = true;
+      });
+
+      if (_activeTripId != null && _currentPosition != null) {
+        await _sendTripLocation(_currentPosition!);
+      }
+
+      if (mounted && _activeTripId != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Active trip #$_activeTripId restored.'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not verify trip status: $e'),
+            action: SnackBarAction(
+              label: 'RETRY',
+              onPressed: _restoreActiveTrip,
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _tripRestoring = false);
+      }
+    }
   }
 
   Future<void> _startTracking() async {
@@ -151,6 +207,131 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     } finally {
       _fetchingRisk = false;
     }
+  }
+
+  Future<void> _loadCommunityReports() async {
+    if (_loadingCommunityReports) return;
+
+    setState(() {
+      _loadingCommunityReports = true;
+      _communityReportsError = null;
+    });
+
+    try {
+      final reports = await ReportApiService.getReports();
+
+      if (!mounted) return;
+
+      setState(() {
+        _communityReports = reports;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _communityReportsError = e.toString().replaceFirst('Exception: ', '');
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _loadingCommunityReports = false);
+      }
+    }
+  }
+
+  Color _hazardColor(String type) {
+    switch (type) {
+      case 'landslide':
+        return Colors.orangeAccent;
+      case 'falling_rock':
+        return Colors.redAccent;
+      case 'blockage':
+        return Colors.deepPurpleAccent;
+      default:
+        return Colors.amber;
+    }
+  }
+
+  IconData _hazardIcon(String type) {
+    switch (type) {
+      case 'landslide':
+        return Icons.terrain;
+      case 'falling_rock':
+        return Icons.landscape;
+      case 'blockage':
+        return Icons.block;
+      default:
+        return Icons.warning_amber_rounded;
+    }
+  }
+
+  void _showHazardDetails(CommunityReport report) {
+    final color = _hazardColor(report.type);
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF162032),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(_hazardIcon(report.type), color: color, size: 30),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        report.type.replaceAll('_', ' ').toUpperCase(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close, color: Colors.white70),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Severity: ${report.severity}/3',
+                  style: TextStyle(color: color, fontWeight: FontWeight.bold),
+                ),
+                if (report.description != null &&
+                    report.description!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    report.description!,
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Text(
+                  'Confirmed: ${report.confirmVotes}   ?   Cleared: ${report.clearVotes}',
+                  style: const TextStyle(color: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Coordinates: ${report.latitude.toStringAsFixed(5)}, '
+                  '${report.longitude.toStringAsFixed(5)}',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                const SizedBox(height: 12),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _startTrip() async {
@@ -333,9 +514,41 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                   );
                 },
               ),
-              if (_currentPosition != null)
-                MarkerLayer(
-                  markers: [
+              MarkerLayer(
+                markers: [
+                  ..._communityReports.map(
+                    (report) => Marker(
+                      point: LatLng(report.latitude, report.longitude),
+                      width: 48,
+                      height: 48,
+                      alignment: Alignment.bottomCenter,
+                      child: GestureDetector(
+                        onTap: () => _showHazardDetails(report),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: _hazardColor(report.type),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.white,
+                              width: 2,
+                            ),
+                            boxShadow: const [
+                              BoxShadow(
+                                color: Colors.black38,
+                                blurRadius: 5,
+                              ),
+                            ],
+                          ),
+                          child: Icon(
+                            _hazardIcon(report.type),
+                            color: Colors.white,
+                            size: 25,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (_currentPosition != null)
                     Marker(
                       point: LatLng(
                         _currentPosition!.latitude,
@@ -349,8 +562,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                         size: 38,
                       ),
                     ),
-                  ],
-                ),
+                ],
+              ),
             ],
           ),
           Positioned(
@@ -361,6 +574,31 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
               valueListenable: RiskApiService.latestRisk,
               builder: (context, risk, child) {
                 final gaps = risk?['risk_data_gaps'] as List? ?? [];
+                final assessmentComplete =
+                    risk?['risk_assessment'] == 'complete';
+                final liveScore = risk?['risk_score'];
+                final rawFlags = risk?['risk_flags'];
+                final flags = rawFlags is Map
+                    ? rawFlags
+                    : const <String, dynamic>{};
+
+    const factorWeights = <String, int>{
+      'heavy_rain': 30,
+      'landslide_history': 25,
+      'steep_slope': 20,
+      'recent_hazard_report': 40,
+      'heavy_traffic': 25,
+      'low_visibility': 15,
+    };
+                final knownFactors = factorWeights.keys
+                    .where((key) => flags[key] != null)
+                    .length;
+                final unknownWeight = factorWeights.entries
+                    .where((entry) => flags[entry.key] == null)
+                    .fold<int>(0, (sum, entry) => sum + entry.value);
+                final possibleMax = liveScore is num && flags.isNotEmpty
+                    ? (liveScore.toInt() + unknownWeight).clamp(0, 100)
+                    : null;
 
                 return Container(
                   padding: const EdgeInsets.all(12),
@@ -382,17 +620,42 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       ),
                       const SizedBox(height: 5),
                       Text(
-                        'Risk level: ${risk?['risk_level'] ?? 'Waiting for data'}',
+                        assessmentComplete
+                            ? 'Risk level: ${risk?['risk_level'] ?? 'Not available'}'
+                            : 'Risk level: Unavailable (incomplete assessment)',
                         style: const TextStyle(color: Colors.white),
                       ),
                       Text(
-                        'Risk score: ${risk?['risk_score'] ?? 'Not available'}',
+                        '${assessmentComplete ? 'Risk score' : 'Partial risk score'}: ${liveScore ?? 'Not available'}',
                         style: const TextStyle(color: Colors.white),
                       ),
                       Text(
                         'Assessment: ${risk?['risk_assessment'] ?? 'Loading'}',
                         style: const TextStyle(color: Colors.white70),
                       ),
+                      if (!assessmentComplete && flags.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        const Text(
+                          'PROVISIONAL ASSESSMENT',
+                          style: TextStyle(
+                            color: Colors.orangeAccent,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10,
+                          ),
+                        ),
+                        if (liveScore is num && possibleMax != null)
+                          Text(
+                            'Possible score: ${liveScore.toInt()}?$possibleMax',
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        Text(
+                          'Data coverage: $knownFactors/6 factors',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
                       if (gaps.isNotEmpty)
                         Text(
                           'Data gaps: ${gaps.join(', ')}',
@@ -477,10 +740,11 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: _tripBusy
-                        ? null
-                        : (_activeTripId == null ? _startTrip : _endTrip),
-                    icon: _tripBusy
+                    onPressed:
+                        (_tripBusy || _tripRestoring || !_tripStateLoaded)
+                            ? null
+                            : (_activeTripId == null ? _startTrip : _endTrip),
+                    icon: (_tripBusy || _tripRestoring || !_tripStateLoaded)
                         ? const SizedBox(
                             width: 18,
                             height: 18,
@@ -490,7 +754,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                             ? Icons.play_arrow
                             : Icons.stop),
                     label: Text(
-                      _tripBusy
+                      _tripRestoring || !_tripStateLoaded
                           ? 'PLEASE WAIT...'
                           : (_activeTripId == null ? 'START TRIP' : 'END TRIP'),
                     ),
@@ -508,6 +772,40 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           if (_loading)
             const Center(
               child: CircularProgressIndicator(),
+            ),
+          Positioned(
+            right: 14,
+            top: 155,
+            child: FloatingActionButton.small(
+              heroTag: 'refresh_community_hazards',
+              onPressed:
+                  _loadingCommunityReports ? null : _loadCommunityReports,
+              tooltip: 'Refresh community hazards',
+              child: _loadingCommunityReports
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh),
+            ),
+          ),
+          if (_communityReportsError != null)
+            Positioned(
+              top: 155,
+              left: 12,
+              right: 70,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade900,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Hazards unavailable: $_communityReportsError',
+                  style: const TextStyle(color: Colors.white, fontSize: 11),
+                ),
+              ),
             ),
           Positioned(
             right: 14,

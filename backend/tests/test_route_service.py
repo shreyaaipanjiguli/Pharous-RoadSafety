@@ -195,13 +195,13 @@ def test_overall_route_risk_uses_distance_weighted_average():
     ]
 
 
-def test_overall_route_risk_is_incomplete_if_any_segment_is_incomplete():
+def test_overall_route_risk_returns_partial_score_if_any_segment_is_incomplete():
     segments = [
         {
             "length_m": 1000,
             "score": 20,
             "risk_assessment": "complete",
-            "reasons": [],
+            "reasons": ["Known hazard"],
         },
         {
             "length_m": 1000,
@@ -214,9 +214,44 @@ def test_overall_route_risk_is_incomplete_if_any_segment_is_incomplete():
     result = calculate_overall_route_risk(segments)
 
     assert result["risk_assessment"] == "incomplete"
-    assert result["overall_risk_score"] is None
+    assert result["overall_risk_score"] == 20
     assert result["overall_risk_level"] is None
     assert result["overall_risk_color"] is None
+    assert result["overall_risk_covered_distance_m"] == 1000
+    assert result["overall_risk_coverage_percent"] == 50
+    assert result["overall_risk_reasons"] == ["Known hazard"]
+
+
+def test_partial_route_score_is_weighted_only_by_scored_segment_distance():
+    segments = [
+        {
+            "length_m": 1000,
+            "score": 20,
+            "risk_assessment": "complete",
+            "reasons": [],
+        },
+        {
+            "length_m": 3000,
+            "score": 60,
+            "risk_assessment": "complete",
+            "reasons": [],
+        },
+        {
+            "length_m": 2000,
+            "score": None,
+            "risk_assessment": "incomplete",
+            "reasons": [],
+        },
+    ]
+
+    result = calculate_overall_route_risk(segments)
+
+    assert result["risk_assessment"] == "incomplete"
+    assert result["overall_risk_score"] == 50
+    assert result["overall_risk_level"] is None
+    assert result["overall_risk_color"] is None
+    assert result["overall_risk_covered_distance_m"] == 4000
+    assert result["overall_risk_coverage_percent"] == 66.67
 
 
 def test_overall_route_risk_handles_empty_segments():
@@ -262,11 +297,46 @@ def test_classify_weather_risk(weather, expected):
     assert classify_weather_risk(weather) == expected
 
 
-def test_classify_weather_risk_rejects_invalid_values():
+def test_classify_weather_risk_validates_measurements_independently():
+    # Invalid precipitation does not discard valid visibility
     assert classify_weather_risk({
         "precipitation_mm": "invalid",
         "visibility_m": 500,
+    }) == (None, True)
+
+    # Valid precipitation does not discard invalid visibility
+    assert classify_weather_risk({
+        "precipitation_mm": 20,
+        "visibility_m": "invalid",
+    }) == (True, None)
+
+    # Negative precipitation is safely treated as unknown
+    assert classify_weather_risk({
+        "precipitation_mm": -5,
+        "visibility_m": 500,
+    }) == (None, True)
+
+    # Negative visibility is safely treated as unknown
+    assert classify_weather_risk({
+        "precipitation_mm": 20,
+        "visibility_m": -10,
+    }) == (True, None)
+
+    # Both invalid returns (None, None)
+    assert classify_weather_risk({
+        "precipitation_mm": "invalid",
+        "visibility_m": "invalid",
     }) == (None, None)
+
+    # Boolean values are not treated as numbers
+    assert classify_weather_risk({
+        "precipitation_mm": True,
+        "visibility_m": False,
+    }) == (None, None)
+
+    # Non-dict inputs safely return (None, None)
+    assert classify_weather_risk("invalid_payload") == (None, None)
+    assert classify_weather_risk(123) == (None, None)
 
 
 def test_classify_weather_risk_rejects_infinite_values():
@@ -274,6 +344,75 @@ def test_classify_weather_risk_rejects_infinite_values():
         "precipitation_mm": float("inf"),
         "visibility_m": float("nan"),
     }) == (None, None)
+    assert classify_weather_risk({
+        "precipitation_mm": float("nan"),
+        "visibility_m": 500,
+    }) == (None, True)
+    assert classify_weather_risk({
+        "precipitation_mm": 20,
+        "visibility_m": float("inf"),
+    }) == (True, None)
+
+
+@pytest.mark.parametrize(
+    "invalid_score",
+    [-1, 101, -0.01, float("nan"), float("inf"), float("-inf"), "invalid", True, None],
+)
+def test_overall_route_risk_rejects_invalid_score(invalid_score):
+    segments = [
+        {
+            "length_m": 1000,
+            "score": invalid_score,
+            "risk_assessment": "complete",
+            "reasons": ["Some hazard"],
+        }
+    ]
+    result = calculate_overall_route_risk(segments)
+    assert result["risk_assessment"] == "incomplete"
+    assert result["overall_risk_score"] is None
+    assert result["overall_risk_level"] is None
+    assert result["overall_risk_color"] is None
+    assert result["overall_risk_reasons"] == []
+
+
+@pytest.mark.parametrize(
+    "invalid_length",
+    [-1, -100.0, float("nan"), float("inf"), float("-inf"), "invalid", True, None],
+)
+def test_overall_route_risk_rejects_invalid_length(invalid_length):
+    segments = [
+        {
+            "length_m": invalid_length,
+            "score": 50,
+            "risk_assessment": "complete",
+            "reasons": ["Some hazard"],
+        }
+    ]
+    result = calculate_overall_route_risk(segments)
+    assert result["risk_assessment"] == "incomplete"
+    assert result["overall_risk_score"] is None
+    assert result["overall_risk_level"] is None
+    assert result["overall_risk_color"] is None
+    assert result["overall_risk_reasons"] == []
+
+
+@pytest.mark.parametrize(
+    "malformed_segments",
+    [
+        "not_a_list",
+        [123],
+        [{"not_a_segment": True}],
+        [{"length_m": 1000}],  # missing score and risk_assessment
+        None,
+    ],
+)
+def test_overall_route_risk_handles_malformed_input(malformed_segments):
+    result = calculate_overall_route_risk(malformed_segments)
+    assert result["risk_assessment"] == "incomplete"
+    assert result["overall_risk_score"] is None
+    assert result["overall_risk_level"] is None
+    assert result["overall_risk_color"] is None
+    assert result["overall_risk_reasons"] == []
 @pytest.mark.parametrize("field,value", [
     ("distance", float("nan")),
     ("distance", float("inf")),

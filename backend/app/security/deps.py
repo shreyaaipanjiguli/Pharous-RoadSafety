@@ -28,6 +28,9 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    if not credentials or not credentials.credentials or not credentials.credentials.strip():
+        raise credentials_error
+
     try:
         payload = decode_token(credentials.credentials)
         user_id = payload.get("sub")
@@ -36,7 +39,11 @@ def get_current_user(
         if user_id is None or role not in {"driver", "admin"}:
             raise credentials_error
 
-        user = db.get(User, int(user_id))
+        parsed_user_id = int(user_id)
+        if parsed_user_id <= 0:
+            raise credentials_error
+
+        user = db.get(User, parsed_user_id)
     except (jwt.InvalidTokenError, ValueError, TypeError):
         raise credentials_error
 

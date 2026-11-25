@@ -1,7 +1,7 @@
 import os
 
 # Dedicated secret for automated tests only.
-os.environ["JWT_SECRET"] = "pharos-automated-tests-only-secret-2026"
+os.environ["JWT_SECRET"] = "pharos-automated-tests-only-secret-2026-with-extra-length"
 
 import pytest
 from fastapi.testclient import TestClient

@@ -12,10 +12,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24
     report_expiry_hours: int = 24
+    trip_monitor_enabled: bool = True
     reports_per_hour_limit: int = 5
     clear_votes_threshold: int = 3
     fcm_credentials_path: str | None = None
     osrm_base_url: str = "https://router.project-osrm.org"
+    tomtom_api_key: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env")
 

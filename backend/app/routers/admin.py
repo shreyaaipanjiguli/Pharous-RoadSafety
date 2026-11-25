@@ -16,7 +16,14 @@ from ..schemas.admin import (
 from ..security.deps import require_admin
 from .reports import is_suspicious_report
 
-router = APIRouter(prefix="/admin", tags=["Admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["Admin"],
+    responses={
+        401: {"description": "Invalid or expired authentication token"},
+        403: {"description": "Admin access required or user account is blocked"},
+    },
+)
 
 DbSession = Annotated[Session, Depends(get_db)]
 AdminUser = Annotated[User, Depends(require_admin)]
@@ -140,8 +147,12 @@ def update_incident(
 
     changes = payload.model_dump(exclude_unset=True)
 
+    latitude_provided = "latitude" in changes
+    longitude_provided = "longitude" in changes
+
     latitude = changes.pop("latitude", None)
     longitude = changes.pop("longitude", None)
+    confidence = changes.pop("location_confidence", None)
 
     required_fields = {
         "type",
@@ -162,6 +173,10 @@ def update_incident(
             f"POINT({longitude} {latitude})",
             srid=4326,
         )
+        changes["location_confidence"] = confidence
+    elif latitude_provided and longitude_provided:
+        changes["geom"] = None
+        changes["location_confidence"] = "unknown"
 
     for field, value in changes.items():
         setattr(incident, field, value)
@@ -189,6 +204,7 @@ def update_incident(
         "notes": incident.notes,
         "latitude": latitude,
         "longitude": longitude,
+        "location_confidence": incident.location_confidence,
     }
 
 

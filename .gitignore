@@ -20,3 +20,28 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Local secrets and Firebase configuration
+mobile/android/app/google-services.json
+
+# Generated Android build files
+mobile/android/build/
+
+# Temporary backup files
+*.pre-*
+*.bak
+*.backup
+*.corrupted-preserved-*
+*.voting-backup
+*.hazard-backup
+*.location-backup
+
+# Local diagnostic outputs
+mobile/flutter-analyze-active-trip.txt
+mobile/pharos-batch*.txt
+pharos-mobile-audit-*.txt
+pharos-source-inspection-*.txt
+tomtom-final-review.txt
+
+# Dashboard backups
+*.dashboard-backup-*

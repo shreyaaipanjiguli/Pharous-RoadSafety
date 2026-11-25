@@ -1,6 +1,6 @@
 import hashlib
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from geoalchemy2 import Geography
 from sqlalchemy import cast, func, or_, select
@@ -11,6 +11,7 @@ from ..models.device import DeviceToken
 from ..models.report import Report
 from ..models.trip import Trip
 from ..models.notification_outbox import NotificationOutbox
+from ..models.notification import Notification
 
 
 
@@ -23,11 +24,12 @@ def check_trip_hazards(
     db: Session,
     trip: Trip,
     upcoming_segments: list[dict] | None = None,
+    report_id: int | None = None,
 ) -> int:
     """
     Find severe active hazards near upcoming route segments.
     Falls back to the latest GPS location when no route is supplied.
-    Notify only once per report per trip.
+    Persist one inbox event per user/report and queue each registered device.
     """
 
     report_geography = cast(
@@ -108,27 +110,32 @@ def check_trip_hazards(
             )
         )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    reports = db.scalars(
-        select(Report).where(
-            Report.status == "active",
-            Report.type.in_(ALERTABLE_TYPES),
-            Report.severity >= 2,
-            or_(
-                Report.expires_at.is_(None),
-                Report.expires_at > now,
-            ),
-            Report.geom.is_not(None),
-            or_(*hazard_conditions),
-        )
-    ).all()
+    report_query = select(Report).where(
+        Report.status == "active",
+        Report.type.in_(ALERTABLE_TYPES),
+        Report.severity >= 2,
+        or_(
+            Report.expires_at.is_(None),
+            Report.expires_at > now,
+        ),
+        Report.geom.is_not(None),
+        or_(*hazard_conditions),
+    )
+
+    if report_id is not None:
+        report_query = report_query.where(Report.id == report_id)
+
+    reports = db.scalars(report_query).all()
 
     already_alerted = set(trip.alerted_report_ids or [])
 
     new_reports = [
-        report for report in reports
+        report
+        for report in reports
         if report.id not in already_alerted
+        and report.user_id != trip.user_id
     ]
 
     if not new_reports:
@@ -140,9 +147,6 @@ def check_trip_hazards(
         )
     ).all()
 
-    if not tokens:
-        return 0
-
     queued_reports = 0
 
     for report in new_reports:
@@ -153,10 +157,32 @@ def check_trip_hazards(
             "Please proceed carefully."
         )
 
+        event_key = f"hazard:report:{report.id}"
+
+        notification = db.scalar(
+            select(Notification).where(
+                Notification.user_id == trip.user_id,
+                Notification.event_key == event_key,
+            )
+        )
+
+        if notification is None:
+            notification = Notification(
+                user_id=trip.user_id,
+                trip_id=trip.id,
+                title=title,
+                body=body,
+                type="hazard",
+                event_key=event_key,
+            )
+            db.add(notification)
+            db.flush()
+
         for token in tokens:
             db.add(
                 NotificationOutbox(
                     user_id=trip.user_id,
+                    notification_id=notification.id,
                     trip_id=trip.id,
                     dedupe_key=(
                         f"hazard:{trip.id}:{report.id}:"
@@ -174,7 +200,6 @@ def check_trip_hazards(
     trip.alerted_report_ids = sorted(already_alerted)
     db.flush()
     return queued_reports
-
 
 
 RISK_LEVEL_ORDER = {
@@ -235,7 +260,7 @@ def check_trip_risk_escalation(
                 trip_id=trip.id,
                 dedupe_key=(
                     f"risk:{trip.id}:{previous_level}:{current_level}:"
-                    f"{datetime.utcnow().isoformat()}:"
+                    f"{datetime.now(timezone.utc).replace(tzinfo=None).isoformat()}:"
                     f"{hashlib.sha256(token.encode()).hexdigest()}"
                 ),
                 fcm_token=token,
@@ -250,6 +275,9 @@ def check_trip_risk_escalation(
     return True
 
 
+MAX_NOTIFICATION_ATTEMPTS = 5
+
+
 def deliver_pending_notifications(
     db: Session,
     limit: int = 100,
@@ -257,7 +285,7 @@ def deliver_pending_notifications(
     """Deliver committed outbox rows without holding trip-row locks."""
     from ..integrations.fcm import send
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     pending = db.scalars(
         select(NotificationOutbox)
         .where(
@@ -279,16 +307,26 @@ def deliver_pending_notifications(
 
         if success:
             item.status = "sent"
-            item.sent_at = datetime.utcnow()
+            item.sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
             item.last_error = None
             delivered += 1
         else:
             item.attempts += 1
-            delay_seconds = min(3600, 30 * (2 ** min(item.attempts - 1, 7)))
-            item.next_attempt_at = (
-                datetime.utcnow() + timedelta(seconds=delay_seconds)
-            )
-            item.last_error = "FCM delivery failed"
+
+            if item.attempts >= MAX_NOTIFICATION_ATTEMPTS:
+                item.status = "failed"
+                item.last_error = (
+                    "FCM delivery failed after maximum attempts"
+                )
+            else:
+                delay_seconds = min(
+                    3600,
+                    30 * (2 ** min(item.attempts - 1, 7)),
+                )
+                item.next_attempt_at = (
+                    datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=delay_seconds)
+                )
+                item.last_error = "FCM delivery failed"
 
     db.commit()
     return delivered

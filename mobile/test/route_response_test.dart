@@ -47,6 +47,9 @@ void main() {
           ],
           'risk_assessment': 'incomplete',
           'risk_data_gaps': ['heavy_traffic'],
+          'overall_risk_score': 30,
+          'overall_risk_covered_distance_m': 1500,
+          'overall_risk_coverage_percent': 75.0,
           'overall_risk_reasons': []
         }
       ]
@@ -57,6 +60,10 @@ void main() {
     expect(result.routes.length, 1);
     expect(result.routes.first.distanceM, 28566.4);
     expect(result.routes.first.riskAssessment, 'incomplete');
+    expect(result.routes.first.overallRiskScore, 30);
+    expect(result.routes.first.overallRiskCoveredDistanceM, 1500);
+    expect(result.routes.first.overallRiskCoveragePercent, 75);
+    expect(result.routes.first.overallRiskLevel, isNull);
     expect(result.routes.first.segments.length, 1);
     expect(
       result.routes.first.segments.first.riskFlags!.heavyTraffic,

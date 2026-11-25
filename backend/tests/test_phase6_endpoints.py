@@ -101,6 +101,49 @@ def test_trip_start_requires_authentication(client):
     assert response.status_code == 401
 
 
+def test_get_active_trip_requires_authentication(client):
+    response = client.get("/trips/active")
+    assert response.status_code == 401
+
+
+def test_get_active_trip_returns_null_when_none_exists(client):
+    headers = get_auth_headers(
+        client,
+        "phase6-no-active-trip@example.com",
+    )
+
+    response = client.get("/trips/active", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() is None
+
+
+def test_get_active_trip_returns_only_current_users_trip(client):
+    owner = get_auth_headers(
+        client,
+        "phase6-active-owner@example.com",
+    )
+    other = get_auth_headers(
+        client,
+        "phase6-active-other@example.com",
+    )
+
+    start = client.post(
+        "/trips/start",
+        headers=owner,
+        json={"route_json": {"distance_m": 1000}},
+    )
+    assert start.status_code == 201
+
+    owner_active = client.get("/trips/active", headers=owner)
+    assert owner_active.status_code == 200
+    assert owner_active.json()["id"] == start.json()["id"]
+    assert owner_active.json()["status"] == "active"
+
+    other_active = client.get("/trips/active", headers=other)
+    assert other_active.status_code == 200
+    assert other_active.json() is None
+
 def test_trip_start_and_end(client):
     headers = get_auth_headers(client, "phase6-lifecycle@example.com")
 
@@ -151,6 +194,7 @@ def test_trip_ownership_and_duplicate_active_trip(client):
 
 def test_risk_matched_road_segment(client, db_session):
     segment = RoadSegment(
+        corridor_id=1,
         segment_no=987655,
         geom=WKTElement(
             "LINESTRING(75.0 12.0, 75.01 12.0)",
@@ -180,7 +224,7 @@ def test_risk_matched_road_segment(client, db_session):
     assert body["road_segment_id"] == segment.id
     assert body["road_match_distance_m"] == 0.0
     assert body["risk_assessment"] == "incomplete"
-    assert body["risk_score"] is None
+    assert body["risk_score"] == 0.0
     assert body["risk_level"] is None
     assert "heavy_rain" in body["risk_data_gaps"]
     assert "low_visibility" in body["risk_data_gaps"]
@@ -227,6 +271,7 @@ def test_risk_passes_weather_flags_to_risk_assessment(
     client, db_session
 ):
     segment = RoadSegment(
+        corridor_id=1,
         segment_no=987656,
         geom=WKTElement(
             "LINESTRING(75.0 12.0, 75.01 12.0)",
@@ -247,19 +292,33 @@ def test_risk_passes_weather_flags_to_risk_assessment(
         "source": "Open-Meteo",
     }
 
+    traffic = {
+        "heavy_traffic": True,
+        "current_speed_kmh": 18.0,
+        "free_flow_speed_kmh": 50.0,
+        "confidence": 0.95,
+        "road_closure": False,
+        "source": "TomTom",
+        "observed_at": "2026-11-24T10:00:00Z",
+    }
+
     mock_risk_result = {
         "risk_assessment": "incomplete",
         "score": None,
         "level": None,
         "risk_flags": None,
         "reasons": [],
-        "risk_data_gaps": ["heavy_traffic"],
+        "risk_data_gaps": [],
     }
 
     with patch(
         "backend.app.routers.routes.get_weather_forecast",
         new_callable=AsyncMock,
         return_value=weather,
+    ), patch(
+        "backend.app.routers.routes.get_segment_traffic",
+        new_callable=AsyncMock,
+        return_value=traffic,
     ), patch(
         "backend.app.routers.routes.assess_segment_risk",
         return_value=mock_risk_result,
@@ -272,21 +331,23 @@ def test_risk_passes_weather_flags_to_risk_assessment(
 
     assert response.status_code == 200
 
-    # Verify weather classification reached the risk engine.
     kwargs = mock_assess.call_args.kwargs
 
     assert kwargs["heavy_rain"] is True
     assert kwargs["low_visibility"] is True
-    assert kwargs["heavy_traffic"] is None
+    assert kwargs["heavy_traffic"] is True
 
-    # Verify weather is included in the API response.
     body = response.json()
     assert body["segments"][0]["weather_forecast"] == weather
+    assert body["segments"][0]["traffic"] == traffic
+    assert body["segments"][0]["data_sources"]["traffic"] == "TomTom"
+
 
 def test_risk_weather_failure_keeps_assessment_incomplete(
     client, db_session
 ):
     segment = RoadSegment(
+        corridor_id=1,
         segment_no=987657,
         geom=WKTElement(
             "LINESTRING(75.0 12.0, 75.01 12.0)",
@@ -315,7 +376,7 @@ def test_risk_weather_failure_keeps_assessment_incomplete(
     body = response.json()
 
     assert body["risk_assessment"] == "incomplete"
-    assert body["risk_score"] is None
+    assert body["risk_score"] == 0.0
     assert body["risk_level"] is None
     assert "heavy_rain" in body["risk_data_gaps"]
     assert "low_visibility" in body["risk_data_gaps"]
@@ -461,3 +522,5 @@ def test_trip_start_handles_concurrent_active_trip_conflict(client):
     assert response.status_code == 409
     assert response.json()["detail"] == "You already have an active trip."
     rollback.assert_called_once()
+
+

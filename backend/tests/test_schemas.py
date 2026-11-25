@@ -35,3 +35,30 @@ def test_report_rejects_description_over_500_characters():
             latitude=12.85,
             longitude=75.65,
         )
+
+
+def test_protected_endpoints_document_auth_responses(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    spec = response.json()
+    paths = spec.get("paths", {})
+
+    # Check protected user/driver endpoints
+    for path, method in [
+        ("/user/profile", "put"),
+        ("/devices", "post"),
+        ("/reports", "post"),
+        ("/trips/start", "post"),
+    ]:
+        responses = paths[path][method]["responses"]
+        assert "401" in responses, f"Missing 401 in {method.upper()} {path}"
+        assert "403" in responses, f"Missing 403 in {method.upper()} {path}"
+
+    # Check admin endpoints
+    for path, method in [
+        ("/admin/stats", "get"),
+        ("/admin/reports/suspicious", "get"),
+    ]:
+        responses = paths[path][method]["responses"]
+        assert "401" in responses, f"Missing 401 in {method.upper()} {path}"
+        assert "403" in responses, f"Missing 403 in {method.upper()} {path}"

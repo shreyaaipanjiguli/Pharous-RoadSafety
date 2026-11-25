@@ -17,6 +17,9 @@ class AuthService {
 
   static String? _accessToken;
 
+  // Cached profile from the last successful getProfile() call.
+  static Map<String, dynamic>? _profile;
+
   // Updates all app bars when login status changes.
   static final ValueNotifier<bool> authState =
       ValueNotifier<bool>(false);

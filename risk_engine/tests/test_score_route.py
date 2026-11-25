@@ -33,7 +33,7 @@ def test_steep_segment_receives_slope_points():
     )
 
     assert abs(segment_8["slope_percent"]) >= 6.0
-    assert segment_8["risk_score"] is None
+    assert segment_8["risk_score"] == 20
     assert segment_8["known_risk_score"] == 20
     assert segment_8["risk_status"] == "incomplete"
     assert "heavy_rain" in segment_8["missing_factors"]
@@ -50,7 +50,7 @@ def test_non_steep_segment_gets_no_slope_points():
     )
 
     assert abs(segment_1["slope_percent"]) < 6.0
-    assert segment_1["risk_score"] is None
+    assert segment_1["risk_score"] == 0
     assert segment_1["known_risk_score"] == 0
     assert segment_1["risk_status"] == "incomplete"
     assert segment_1["reasons"] == []
@@ -304,3 +304,87 @@ def test_reverse_direction_uses_reversed_segment_order_for_weather_eta(monkeypat
     assert results[0]["weather_observation_date"] == "forecast-for-segment-1"
     assert results[1]["rainfall_mm"] == 22.0
     assert results[1]["weather_observation_date"] == "forecast-for-segment-2"
+
+def test_all_supported_historical_hazards_are_matched(monkeypatch):
+    import risk_engine.score_route as route
+
+    segment = {
+        "segment_id": 1,
+        "length_m": 1000,
+        "slope_percent": 0,
+    }
+
+    incidents = [
+        {
+            "id": f"INC-{hazard}",
+            "type": hazard,
+            "latitude": 12.880,
+            "longitude": 75.715,
+        }
+        for hazard in route.HISTORICAL_HAZARD_TYPES
+    ]
+
+    captured = {}
+
+    monkeypatch.setattr(route, "load_route_segments", lambda: [segment])
+    monkeypatch.setattr(route, "load_incidents", lambda: incidents)
+
+    def fake_match(received_incidents, segments, max_distance_m):
+        captured["types"] = [
+            item["type"] for item in received_incidents
+        ]
+        captured["radius"] = max_distance_m
+        return {
+            1: [item["id"] for item in received_incidents]
+        }
+
+    monkeypatch.setattr(route, "match_incidents_to_segments", fake_match)
+
+    result = route.score_route_segments()[0]
+
+    assert set(captured["types"]) == set(route.HISTORICAL_HAZARD_TYPES)
+    assert captured["radius"] == 500
+    assert len(result["historical_incident_ids"]) == 4
+    assert "Landslide history" in result["reasons"]
+    assert "landslide_history" not in result["missing_factors"]
+
+
+def test_unlocated_non_landslide_hazard_keeps_history_unknown(monkeypatch):
+    import risk_engine.score_route as route
+
+    segment = {
+        "segment_id": 1,
+        "length_m": 1000,
+        "slope_percent": 0,
+    }
+
+    incidents = [
+        {
+            "id": f"INC-{hazard}",
+            "type": hazard,
+            "latitude": 12.880,
+            "longitude": 75.715,
+        }
+        for hazard in route.HISTORICAL_HAZARD_TYPES
+    ]
+
+    # A single unlocated falling-rock incident makes overall historical
+    # coverage incomplete, even when the other hazard types are geocoded.
+    incidents[1]["latitude"] = None
+    incidents[1]["longitude"] = None
+
+    monkeypatch.setattr(route, "load_route_segments", lambda: [segment])
+    monkeypatch.setattr(route, "load_incidents", lambda: incidents)
+    monkeypatch.setattr(
+        route,
+        "match_incidents_to_segments",
+        lambda received, segments, max_distance_m: {1: []},
+    )
+
+    result = route.score_route_segments()[0]
+
+    assert result["historical_incident_ids"] == []
+    assert "landslide_history" in result["missing_factors"]
+    assert "Landslide history" not in result["reasons"]
+    assert result["risk_level"] is None
+

@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+﻿from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +10,7 @@ from .routers.routes import router as routes_router
 from .routers.risk_routes import risk_router
 from .routers.trips import router as trips_router
 from .routers.devices import router as devices_router
+from .routers.notifications import router as notifications_router
 from .services.trip_monitor import start_trip_monitor, stop_trip_monitor
 
 
@@ -43,6 +44,7 @@ app.include_router(routes_router)
 app.include_router(risk_router)
 app.include_router(trips_router)
 app.include_router(devices_router)
+app.include_router(notifications_router)
 
 
 @app.get("/")
@@ -53,3 +55,4 @@ def root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+

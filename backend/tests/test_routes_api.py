@@ -233,6 +233,58 @@ def test_live_data_request_passes_duration_and_returns_segment_metadata(monkeypa
     assert segment["historical_incident_ids"] == ["H-1"]
     assert segment["recent_hazard_report_ids"] == ["R-1"]
     assert segment["data_sources"]["weather"] == "Open-Meteo"
+
+
+def test_route_passes_tomtom_traffic_to_assessor(monkeypatch):
+    mock_osrm_success(monkeypatch)
+
+    traffic = {
+        "heavy_traffic": True,
+        "current_speed_kmh": 18.0,
+        "free_flow_speed_kmh": 50.0,
+        "confidence": 0.95,
+        "road_closure": False,
+        "source": "TomTom",
+        "observed_at": "2026-11-24T10:00:00Z",
+    }
+
+    async def mocked_traffic_fetch(segments):
+        return [traffic for _ in segments]
+
+    original_assessor = route_api.assess_route_segments
+    captured = {}
+
+    def mocked_assessor(db, segments, **kwargs):
+        captured.update(kwargs)
+        return original_assessor(db, segments, **kwargs)
+
+    monkeypatch.setattr(
+        route_api,
+        "_fetch_traffic_for_segments",
+        mocked_traffic_fetch,
+    )
+    monkeypatch.setattr(
+        route_api,
+        "assess_route_segments",
+        mocked_assessor,
+    )
+
+    response = client.post("/route", json=FORWARD_PAYLOAD)
+
+    assert response.status_code == 200
+
+    traffic_by_segment = captured["traffic_by_segment"]
+    assert len(traffic_by_segment) == 28
+    assert traffic_by_segment[1] == traffic
+    assert traffic_by_segment[28] == traffic
+
+    route = response.json()["routes"][0]
+    first_segment = route["segments"][0]
+
+    assert first_segment["traffic"] == traffic
+    assert first_segment["data_sources"]["traffic"] == "TomTom"
+
+
 def test_reverse_route_passes_reverse_flag_to_risk_scorer(monkeypatch):
     mock_osrm_success(monkeypatch)
 

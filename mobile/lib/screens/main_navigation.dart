@@ -1,12 +1,14 @@
-
+﻿
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
+import '../services/notification_api_service.dart';
 import 'home_screen.dart';
 import 'route_planner_screen.dart';
 import 'live_map_screen.dart';
 import 'safe_places_screen.dart';
 import 'report_hazard_screen.dart';
+import 'community_screen.dart';
 
 class MainNavigation extends StatefulWidget {
   const MainNavigation({super.key});
@@ -24,6 +26,7 @@ class _MainNavigationState extends State<MainNavigation> {
     const LiveMapScreen(),
     const SafePlacesScreen(),
     const ReportHazardScreen(),
+    const CommunityScreen(),
   ];
 
   @override
@@ -62,6 +65,11 @@ class _MainNavigationState extends State<MainNavigation> {
             icon: Icon(Icons.warning_amber_rounded),
             activeIcon: Icon(Icons.warning),
             label: 'Report',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.groups_outlined),
+            activeIcon: Icon(Icons.groups),
+            label: 'Community',
           ),
         ],
       ),
@@ -149,102 +157,345 @@ class _PharosAppBarState extends State<PharosAppBar> {
   }
 
   void _showNotificationsModal() {
+    if (!AuthService.isLoggedIn) {
+      showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: const Color(0xFF162032),
+        builder: (sheetContext) => Padding(
+          padding: const EdgeInsets.all(24),
+          child: ValueListenableBuilder<bool>(
+            valueListenable: AuthService.authState,
+            builder: (context, loggedIn, child) {
+              if (loggedIn) {
+                return const SizedBox(
+                  height: 120,
+                  child: Center(
+                    child: Text(
+                      'Please reopen notifications.',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                );
+              }
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.notifications_off_outlined,
+                    size: 48,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Login to access your notifications.',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      _showAuthDialog();
+                    },
+                    child: const Text('Login Now'),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      );
+      return;
+    }
+
+    Future<Map<String, dynamic>> notificationsFuture =
+        NotificationApiService.getNotifications();
+
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF162032),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetContext) {
-        return ValueListenableBuilder<bool>(
-          valueListenable: AuthService.authState,
-          builder: (context, loggedIn, child) {
-            return Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            Future<void> refreshNotifications() async {
+              setModalState(() {
+                notificationsFuture =
+                    NotificationApiService.getNotifications();
+              });
+            }
+
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                child: SizedBox(
+                  height: MediaQuery.of(context).size.height * 0.65,
+                  child: Column(
                     children: [
-                      const Text(
-                        'Notifications',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Notifications',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.refresh,
+                              color: Colors.cyanAccent,
+                            ),
+                            onPressed: refreshNotifications,
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.grey,
+                            ),
+                            onPressed: () => Navigator.pop(sheetContext),
+                          ),
+                        ],
                       ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.close,
-                          color: Colors.grey,
+                      const Divider(color: Colors.white12),
+                      Expanded(
+                        child: FutureBuilder<Map<String, dynamic>>(
+                          future: notificationsFuture,
+                          builder: (context, snapshot) {
+                            if (snapshot.connectionState ==
+                                ConnectionState.waiting) {
+                              return const Center(
+                                child: CircularProgressIndicator(
+                                  color: Colors.cyanAccent,
+                                ),
+                              );
+                            }
+
+                            if (snapshot.hasError) {
+                              return Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.error_outline,
+                                      color: Colors.redAccent,
+                                      size: 40,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      snapshot.error.toString(),
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    TextButton(
+                                      onPressed: refreshNotifications,
+                                      child: const Text('Retry'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }
+
+                            final data = snapshot.data!;
+                            final items =
+                                data['notifications'] as List<dynamic>? ?? [];
+                            final unreadCount =
+                                data['unread_count'] as int? ?? 0;
+
+                            return Column(
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      '$unreadCount unread',
+                                      style: const TextStyle(
+                                        color: Colors.cyanAccent,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    if (unreadCount > 0)
+                                      TextButton(
+                                        onPressed: () async {
+                                          try {
+                                            await NotificationApiService
+                                                .markAllAsRead();
+                                            await refreshNotifications();
+                                          } catch (e) {
+                                            if (!sheetContext.mounted) return;
+                                            ScaffoldMessenger.of(sheetContext)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Could not update notifications: $e',
+                                                ),
+                                              ),
+                                            );
+                                          }
+                                        },
+                                        child: const Text('Mark all as read'),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Expanded(
+                                  child: items.isEmpty
+                                      ? const Center(
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                Icons.notifications_none,
+                                                size: 52,
+                                                color: Colors.grey,
+                                              ),
+                                              SizedBox(height: 12),
+                                              Text(
+                                                'No notifications yet.',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              SizedBox(height: 6),
+                                              Text(
+                                                'Safety alerts will appear here.',
+                                                style: TextStyle(
+                                                  color: Colors.grey,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        )
+                                      : ListView.separated(
+                                          itemCount: items.length,
+                                          separatorBuilder: (context, index) =>
+                                              const Divider(
+                                            color: Colors.white12,
+                                            height: 1,
+                                          ),
+                                          itemBuilder: (context, index) {
+                                            final item =
+                                                Map<String, dynamic>.from(
+                                              items[index] as Map,
+                                            );
+                                            final isRead =
+                                                item['is_read'] == true;
+                                            final id = item['id'] as int;
+                                            final createdAt =
+                                                DateTime.tryParse(
+                                              item['created_at']?.toString() ??
+                                                  '',
+                                            )?.toLocal();
+
+                                            return ListTile(
+                                              contentPadding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 4,
+                                                vertical: 6,
+                                              ),
+                                              leading: Icon(
+                                                item['type'] == 'hazard'
+                                                    ? Icons.warning_amber_rounded
+                                                    : item['type'] ==
+                                                            'risk_escalation'
+                                                        ? Icons.trending_up
+                                                        : Icons.notifications,
+                                                color: isRead
+                                                    ? Colors.grey
+                                                    : Colors.cyanAccent,
+                                              ),
+                                              title: Text(
+                                                item['title']?.toString() ?? '',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: isRead
+                                                      ? FontWeight.normal
+                                                      : FontWeight.bold,
+                                                ),
+                                              ),
+                                              subtitle: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                    item['body']?.toString() ??
+                                                        '',
+                                                    style: const TextStyle(
+                                                      color: Colors.white70,
+                                                    ),
+                                                  ),
+                                                  if (createdAt != null) ...[
+                                                    const SizedBox(height: 5),
+                                                    Text(
+                                                      createdAt
+                                                          .toString()
+                                                          .substring(0, 16),
+                                                      style: const TextStyle(
+                                                        color: Colors.grey,
+                                                        fontSize: 11,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
+                                              trailing: isRead
+                                                  ? const Icon(
+                                                      Icons.done,
+                                                      color: Colors.grey,
+                                                    )
+                                                  : IconButton(
+                                                      tooltip: 'Mark as read',
+                                                      icon: const Icon(
+                                                        Icons
+                                                            .mark_email_read_outlined,
+                                                        color: Colors.cyanAccent,
+                                                      ),
+                                                      onPressed: () async {
+                                                        try {
+                                                          await NotificationApiService
+                                                              .markAsRead(id);
+                                                          await refreshNotifications();
+                                                        } catch (e) {
+                                                          if (!sheetContext
+                                                              .mounted) {
+                                                            return;
+                                                          }
+                                                          ScaffoldMessenger.of(
+                                                            sheetContext,
+                                                          ).showSnackBar(
+                                                            SnackBar(
+                                                              content: Text(
+                                                                'Could not update notification: $e',
+                                                              ),
+                                                            ),
+                                                          );
+                                                        }
+                                                      },
+                                                    ),
+                                            );
+                                          },
+                                        ),
+                                ),
+                              ],
+                            );
+                          },
                         ),
-                        onPressed: () => Navigator.pop(sheetContext),
                       ),
                     ],
                   ),
-                  const Divider(color: Colors.white12),
-                  const SizedBox(height: 12),
-                  if (loggedIn) ...[
-                    const Icon(
-                      Icons.notifications_none,
-                      size: 48,
-                      color: Colors.grey,
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'No live notifications yet.',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Safety notifications will appear here when the notification service is connected.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey, fontSize: 13),
-                    ),
-                  ] else ...[
-                    const Icon(
-                      Icons.notifications_off_outlined,
-                      size: 48,
-                      color: Colors.grey,
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'No notifications yet.',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Login to access your Pharos account.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey, fontSize: 13),
-                    ),
-                    const SizedBox(height: 20),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0055FF),
-                      ),
-                      onPressed: () {
-                        Navigator.pop(sheetContext);
-                        _showAuthDialog();
-                      },
-                      child: const Text(
-                        'Login Now',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                ],
+                ),
               ),
             );
           },
@@ -611,3 +862,5 @@ class _AuthDialogState extends State<_AuthDialog> {
     );
   }
 }
+
+

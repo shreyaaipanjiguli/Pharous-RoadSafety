@@ -37,6 +37,18 @@ def get_risk_level(score: float) -> str:
     return "Red"
 
 
+def _parse_weather_value(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(val) or val < 0:
+        return None
+    return val
+
+
 def classify_weather_risk(
     weather: dict[str, Any] | None,
 ) -> tuple[bool | None, bool | None]:
@@ -45,41 +57,27 @@ def classify_weather_risk(
     Returns:
         (heavy_rain, low_visibility)
 
-    Missing or invalid values remain unknown rather than being treated
-    as safe.
+    Missing, malformed, negative, NaN or infinite values remain unknown (None)
+    rather than being treated as safe. Precipitation and visibility are validated
+    independently: an invalid measurement in one does not discard a valid
+    measurement in the other.
     """
-    if weather is None:
+    if not isinstance(weather, dict):
         return None, None
 
-    precipitation = weather.get("precipitation_mm")
-    visibility = weather.get("visibility_m")
+    precipitation = _parse_weather_value(weather.get("precipitation_mm"))
+    visibility = _parse_weather_value(weather.get("visibility_m"))
 
-    try:
-        if precipitation is None:
-            heavy_rain = None
-        else:
-            precipitation_value = float(precipitation)
-            if not math.isfinite(precipitation_value) or precipitation_value < 0:
-                heavy_rain = None
-            else:
-                heavy_rain = (
-                    precipitation_value
-                    > HEAVY_RAIN_THRESHOLD_MM_PER_HOUR
-                )
-
-        if visibility is None:
-            low_visibility = None
-        else:
-            visibility_value = float(visibility)
-            if not math.isfinite(visibility_value) or visibility_value < 0:
-                low_visibility = None
-            else:
-                low_visibility = (
-                    visibility_value < LOW_VISIBILITY_THRESHOLD_M
-                )
-
-    except (TypeError, ValueError, OverflowError):
-        return None, None
+    heavy_rain = (
+        (precipitation > HEAVY_RAIN_THRESHOLD_MM_PER_HOUR)
+        if precipitation is not None
+        else None
+    )
+    low_visibility = (
+        (visibility < LOW_VISIBILITY_THRESHOLD_M)
+        if visibility is not None
+        else None
+    )
 
     return heavy_rain, low_visibility
 
@@ -245,15 +243,21 @@ def assess_route_segments(
     db: Session,
     segments: list[dict[str, Any]],
     weather_by_segment: dict[int, dict[str, Any] | None] | None = None,
+    traffic_by_segment: dict[int, dict[str, Any] | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Match route segments to stored roads and assess available risk data."""
     weather_by_segment = weather_by_segment or {}
+    traffic_by_segment = traffic_by_segment or {}
     assessed: list[dict[str, Any]] = []
 
     for segment in segments:
         start = segment["start"]
         end = segment["end"]
         weather = weather_by_segment.get(segment["segment_id"])
+        traffic = traffic_by_segment.get(segment["segment_id"])
+        heavy_traffic = (
+            traffic["heavy_traffic"] if traffic is not None else None
+        )
 
         segment_coordinates = segment.get(
             "coordinates",
@@ -315,9 +319,10 @@ def assess_route_segments(
             gaps = [
                 "No stored road segment matched within the configured radius",
                 "Slope data unavailable for this segment",
-                "Traffic data unavailable",
             ]
 
+            if traffic is None:
+                gaps.append("Traffic data unavailable")
             if heavy_rain is None:
                 gaps.append("Heavy-rain classification unavailable")
 
@@ -332,6 +337,11 @@ def assess_route_segments(
                 "slope_percent": None,
                 "risk_assessment": "incomplete",
                 "weather_forecast": weather,
+                "traffic": traffic,
+                "data_sources": {
+                    "weather": weather.get("source") if isinstance(weather, dict) else None,
+                    "traffic": traffic.get("source") if traffic else None,
+                },
                 "score": None,
                 "level": None,
                 "color": None,
@@ -352,7 +362,7 @@ def assess_route_segments(
             slope_percent=road.slope_percent,
             slope_threshold_percent=SLOPE_THRESHOLD_PERCENT,
             heavy_rain=heavy_rain,
-            heavy_traffic=None,
+            heavy_traffic=heavy_traffic,
             low_visibility=low_visibility,
         )
 
@@ -373,9 +383,8 @@ def assess_route_segments(
                 "Slope data unavailable for this segment"
             )
 
-        risk_data_gaps.append(
-            "Traffic data unavailable"
-        )
+        if traffic is None:
+            risk_data_gaps.append("Traffic data unavailable")
 
         level = risk["level"]
 
@@ -386,6 +395,11 @@ def assess_route_segments(
             "road_match_distance_m": round(float(distance_m), 2),
             "slope_percent": road.slope_percent,
             "weather_forecast": weather,
+            "traffic": traffic,
+            "data_sources": {
+                "weather": weather.get("source") if isinstance(weather, dict) else None,
+                "traffic": traffic.get("source") if traffic else None,
+            },
             "risk_assessment": risk["risk_assessment"],
             "risk_flags": risk["risk_flags"],
             "risk_data_gaps": sorted(set(risk_data_gaps)),
@@ -401,60 +415,115 @@ def assess_route_segments(
 def calculate_overall_route_risk(
     segments: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Calculate distance-weighted risk only when every segment is complete."""
-    if not segments:
-        return {
-            "risk_assessment": "incomplete",
-            "overall_risk_score": None,
-            "overall_risk_level": None,
-            "overall_risk_color": None,
-            "overall_risk_reasons": [],
-        }
+    """Calculate complete or explicitly partial distance-weighted route risk."""
+    incomplete_result = {
+        "risk_assessment": "incomplete",
+        "overall_risk_score": None,
+        "overall_risk_level": None,
+        "overall_risk_color": None,
+        "overall_risk_reasons": [],
+        "overall_risk_covered_distance_m": None,
+        "overall_risk_coverage_percent": None,
+    }
 
-    if any(
-        segment.get("risk_assessment") != "complete"
-        or segment.get("score") is None
-        for segment in segments
+    if not isinstance(segments, list) or not segments:
+        return incomplete_result
+
+    total_distance = 0.0
+    covered_distance = 0.0
+    weighted_total = 0.0
+    all_complete = True
+    scored_segments = []
+
+    for segment in segments:
+        if not isinstance(segment, dict):
+            return incomplete_result
+
+        status = segment.get("risk_assessment")
+        if status not in ("complete", "incomplete"):
+            return incomplete_result
+
+        if status != "complete":
+            all_complete = False
+
+        length = segment.get("length_m")
+        if length is None or isinstance(length, bool):
+            return incomplete_result
+
+        try:
+            length_value = float(length)
+        except (TypeError, ValueError, OverflowError):
+            return incomplete_result
+
+        if not math.isfinite(length_value) or length_value < 0:
+            return incomplete_result
+
+        total_distance += length_value
+
+        score = segment.get("score")
+        if score is None:
+            if status == "complete":
+                return incomplete_result
+            continue
+
+        if isinstance(score, bool):
+            return incomplete_result
+
+        try:
+            score_value = float(score)
+        except (TypeError, ValueError, OverflowError):
+            return incomplete_result
+
+        if not math.isfinite(score_value) or not 0 <= score_value <= 100:
+            return incomplete_result
+
+        covered_distance += length_value
+        weighted_total += score_value * length_value
+        scored_segments.append(segment)
+
+    if (
+        not math.isfinite(total_distance)
+        or total_distance <= 0
+        or not math.isfinite(covered_distance)
+        or covered_distance <= 0
+        or not math.isfinite(weighted_total)
     ):
-        return {
-            "risk_assessment": "incomplete",
-            "overall_risk_score": None,
-            "overall_risk_level": None,
-            "overall_risk_color": None,
-            "overall_risk_reasons": [],
-        }
+        return incomplete_result
 
-    total_distance = sum(
-        float(segment["length_m"])
-        for segment in segments
-    )
+    weighted_score = weighted_total / covered_distance
+    if not math.isfinite(weighted_score):
+        return incomplete_result
 
-    if total_distance <= 0:
-        return {
-            "risk_assessment": "incomplete",
-            "overall_risk_score": None,
-            "overall_risk_level": None,
-            "overall_risk_color": None,
-            "overall_risk_reasons": [],
-        }
-
-    weighted_score = sum(
-        float(segment["score"]) * float(segment["length_m"])
-        for segment in segments
-    ) / total_distance
-
-    overall_level = get_risk_level(weighted_score)
+    weighted_score = max(0.0, min(100.0, weighted_score))
 
     reasons = sorted({
         reason
-        for segment in segments
-        for reason in segment.get("reasons", [])
+        for segment in scored_segments
+        if isinstance(segment.get("reasons"), (list, tuple, set))
+        for reason in segment["reasons"]
+        if isinstance(reason, str)
     })
 
+    coverage_percent = (covered_distance / total_distance) * 100.0
+
+    if all_complete and len(scored_segments) == len(segments):
+        overall_level = get_risk_level(weighted_score)
+        return {
+            "risk_assessment": "complete",
+            "overall_risk_score": round(weighted_score, 2),
+            "overall_risk_level": overall_level,
+            "overall_risk_color": RISK_COLORS.get(overall_level, "green"),
+            "overall_risk_reasons": reasons,
+            "overall_risk_covered_distance_m": round(covered_distance, 2),
+            "overall_risk_coverage_percent": 100.0,
+        }
+
     return {
-        "risk_assessment": "complete",
+        "risk_assessment": "incomplete",
         "overall_risk_score": round(weighted_score, 2),
-        "overall_risk_level": overall_level,
-        "overall_risk_color": RISK_COLORS[overall_level],
+        "overall_risk_level": None,
+        "overall_risk_color": None,
         "overall_risk_reasons": reasons,
+        "overall_risk_covered_distance_m": round(covered_distance, 2),
+        "overall_risk_coverage_percent": round(coverage_percent, 2),
     }

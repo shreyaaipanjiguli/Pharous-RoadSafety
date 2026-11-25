@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -42,6 +42,42 @@ class RiskFlagsResponse(BaseModel):
     recent_hazard_report: bool | None
     heavy_traffic: bool | None
     low_visibility: bool | None
+
+
+
+class LocationRiskSegmentResponse(BaseModel):
+    road_segment_id: int
+    distance_from_user_m: float = Field(ge=0)
+    geometry: dict[str, Any] | None = None
+    segment_bearing: float
+    heading_difference: float | None = None
+    weather_forecast: dict[str, Any] | None = None
+    traffic: dict[str, Any] | None = None
+    data_sources: dict[str, str | None] = Field(default_factory=dict)
+    risk_assessment: RiskAssessmentStatus
+    risk_score: float | None = Field(default=None, ge=0, le=100)
+    risk_level: RiskLevel | None = None
+    risk_color: Literal["green", "yellow", "orange", "red"] | None = None
+    risk_flags: RiskFlagsResponse | None = None
+    reasons: list[str] = Field(default_factory=list)
+    risk_data_gaps: list[str] = Field(default_factory=list)
+
+
+class LocationRiskResponse(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    heading: float | None = Field(default=None, ge=0, lt=360)
+    road_segment_id: int | None = None
+    road_match_distance_m: float | None = Field(default=None, ge=0)
+    segment_bearing: float | None = None
+    heading_difference: float | None = None
+    risk_assessment: RiskAssessmentStatus
+    risk_score: float | None = Field(default=None, ge=0, le=100)
+    risk_level: RiskLevel | None = None
+    risk_flags: RiskFlagsResponse | None = None
+    reasons: list[str] = Field(default_factory=list)
+    segments: list[LocationRiskSegmentResponse] = Field(default_factory=list)
+    risk_data_gaps: list[str] = Field(default_factory=list)
 
 
 class RiskSegmentResponse(BaseModel):
@@ -105,6 +141,8 @@ class RouteOptionResponse(BaseModel):
     risk_assessment: RiskAssessmentStatus
     risk_data_gaps: list[str] = Field(default_factory=list)
     overall_risk_score: float | None = Field(default=None, ge=0, le=100)
+    overall_risk_covered_distance_m: float | None = Field(default=None, ge=0)
+    overall_risk_coverage_percent: float | None = Field(default=None, ge=0, le=100)
     overall_risk_level: RiskLevel | None = None
     overall_risk_color: Literal["green", "yellow", "orange", "red"] | None = None
     overall_risk_reasons: list[str] = Field(default_factory=list)
